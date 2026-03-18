@@ -1,0 +1,657 @@
+---
+title: "SOS Bioreactivity Analyses"
+date: today
+format:
+  html:
+    toc: true
+    toc-float: true
+    toc-depth: 3
+    code-fold: true
+    code-summary: "Show code"
+    theme: journal
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup, echo=FALSE}
+pacman::p_load(
+  "dplyr", "ggplot2", "tidyr", "stringr", "purrr", "here",
+  "lme4", "lmerTest", "broom", "broom.mixed", "readxl",
+  "ggpubr", "ggsignif", "Hmisc", "corrplot", "knitr", "kableExtra", "ggdist"
+)
+
+proj_path <- here()
+data_path <- Sys.getenv("CAS_DIR")
+options(knitr.table.format = "html")
+```
+
+```{r load-data, echo=FALSE}
+sos_cytokines <- read.csv(file.path(
+  data_path, "TAG/data/SOS/saliva/Cleaned_datasets/SOS_cytokines_cleaned.csv"
+))
+sos_crp <- read.csv(file.path(
+  data_path, "TAG/data/SOS/saliva/Cleaned_datasets/SOS_CRP_cleaned.csv"
+))
+sos_hormones <- read.csv(file.path(
+  data_path, "TAG/data/SOS/saliva/Cleaned_datasets/SOS_hormones_cleaned.csv"
+)) |>
+  select(-starts_with("Estradiol"))
+
+hr_resting1_raw  <- read.csv(file.path(data_path, "TAG/data/SOS/physio/Mean_HR_Resting1.csv"))
+hr_resting2_raw  <- read.csv(file.path(data_path, "TAG/data/SOS/physio/Mean_HR_Resting2.csv"))
+hr_task_raw      <- read.csv(file.path(data_path, "TAG/data/SOS/physio/Mean_HR_Task.csv"))
+hr_conditions_raw <- read_excel(file.path(
+  data_path, "TAG/data/SOS/physio/Heart_Rate_Data_Task_Sequence_All_Slices_Conditions.xlsx"
+))
+```
+
+```{r hr-processing, echo=FALSE}
+hr_exclude <- c(
+  "TAG313p2_20191117_151413",   # duplicate session
+  "TAG077_20190823_145422",     # artifact: impossibly low task HR
+  "TAG188_20190731_145115"      # artifact: impossibly low task HR
+)
+
+hr_resting1 <- hr_resting1_raw |> rename(id = 1) |> filter(!id %in% hr_exclude) |> mutate(sequence = "Resting 1")
+hr_resting2 <- hr_resting2_raw |> rename(id = 1) |> filter(!id %in% hr_exclude) |> mutate(sequence = "Resting 2")
+hr_task      <- hr_task_raw    |> rename(id = 1) |> filter(!id %in% hr_exclude) |> mutate(sequence = "Task")
+
+hr_all_wide <- bind_rows(hr_resting1, hr_resting2, hr_task) |>
+  pivot_wider(names_from = sequence, values_from = Mean_HR) |>
+  mutate(resting_avg = if_else(is.na(`Resting 2`), `Resting 1`, (`Resting 1` + `Resting 2`) / 2))
+
+hr_conditions_avg <- hr_conditions_raw |>
+  pivot_longer(SOS068_20190303_150846:TAG223_20191116_145342, names_to = "id", values_to = "hr") |>
+  rename(task_condition = Task_condition) |>
+  group_by(id, task_condition) |>
+  summarise(mean_hr = mean(hr, na.rm = TRUE), .groups = "drop") |>
+  filter(!is.na(task_condition), task_condition != "NA") |>
+  mutate(task_condition = factor(task_condition,
+    levels = c("1", "2", "3", "R"),
+    labels = c("Other", "Self-Disconnected", "Self-Connected", "Rest")
+  )) |>
+  filter(!id %in% hr_exclude)
+
+pull_hr <- function(cond) filter(hr_conditions_avg, task_condition == cond)$mean_hr
+
+make_box_stats <- function(data, col) {
+  function(y, upper_limit = max(data[[col]], na.rm = TRUE) * 1.15) {
+    data.frame(
+      y     = 0.95 * upper_limit,
+      label = paste("Mean =", round(mean(y), 2), "\n", "Median =", round(median(y), 2), "\n")
+    )
+  }
+}
+```
+
+```{r hr-difference, echo=FALSE}
+hr_final_wide <- hr_all_wide |>
+  full_join(
+    hr_conditions_avg |> pivot_wider(names_from = task_condition, values_from = mean_hr),
+    by = "id"
+  ) |>
+  mutate(
+    SampleID = case_when(
+      str_sub(id, 1, 6) == "SOS068" ~ "TAG068",
+      str_sub(id, 1, 6) == "SOS076" ~ "TAG076",
+      .default = str_sub(id, 1, 6)
+    ),
+    task_rs_hr_diff    = Task - resting_avg,
+    conn_dis_hr_diff   = `Self-Connected` - `Self-Disconnected`,
+    conn_other_hr_diff = `Self-Connected` - Other,
+    conn_rest_hr_diff  = `Self-Connected` - Rest
+  )
+
+hr_difference <- hr_final_wide |>
+  select(SampleID, task_rs_hr_diff, conn_dis_hr_diff, conn_other_hr_diff, conn_rest_hr_diff)
+```
+
+```{r biomarker-processing, echo=FALSE}
+sos_crp_panel       <- sos_crp       |> select(SampleID, Time, CRP_log)
+sos_cytokines_panel <- sos_cytokines |> select(SampleID, Time, IL10_log, IL6_log, TNFalpha_log)
+sos_hormones_panel  <- sos_hormones  |> select(SampleID, Time, DHEA_log, Testosterone_log, Cortisol_log)
+
+run_mlm <- function(outcome, data) {
+  f_lin  <- as.formula(paste(outcome, "~ 1 + Time + (1 + Time | SampleID)"))
+  f_quad <- as.formula(paste(outcome, "~ 1 + poly(Time, 2) + (1 + poly(Time, 2) | SampleID)"))
+  mlm_lin  <- lmer(f_lin,  na.action = na.omit, REML = TRUE, data = data)
+  mlm_quad <- lmer(f_quad, na.action = na.omit, REML = TRUE, data = data)
+  list(linear = mlm_lin, quadratic = mlm_quad, aic = AIC(mlm_lin, mlm_quad), bic = BIC(mlm_lin, mlm_quad))
+}
+
+mlm_crp      <- run_mlm("CRP_log",          sos_crp_panel)
+mlm_il10     <- run_mlm("IL10_log",         sos_cytokines_panel)
+mlm_il6      <- run_mlm("IL6_log",          sos_cytokines_panel)
+mlm_tnfalpha <- run_mlm("TNFalpha_log",     sos_cytokines_panel)
+mlm_dhea     <- run_mlm("DHEA_log",         sos_hormones_panel)
+mlm_test     <- run_mlm("Testosterone_log", sos_hormones_panel)
+mlm_cort     <- run_mlm("Cortisol_log",     sos_hormones_panel)
+```
+
+```{r peaks-processing, echo=FALSE}
+sos_crp_wide <- sos_crp_panel |>
+  pivot_wider(names_from = Time, values_from = CRP_log, names_glue = "CRP_log_{Time}", values_fn = mean) |>
+  mutate(crp_peak = if_else(CRP_log_3 > CRP_log_4, CRP_log_3, CRP_log_4))
+
+sos_cytokines_wide <- sos_cytokines_panel |>
+  pivot_wider(names_from = Time, values_from = c(IL10_log, IL6_log, TNFalpha_log), values_fn = mean) |>
+  mutate(
+    il10_peak = if_else(IL10_log_3     > IL10_log_4,     IL10_log_3,     IL10_log_4),
+    il6_peak  = if_else(IL6_log_3      > IL6_log_4,      IL6_log_3,      IL6_log_4),
+    tnfa_peak = if_else(TNFalpha_log_3 > TNFalpha_log_4, TNFalpha_log_3, TNFalpha_log_4)
+  )
+
+sos_hormones_wide <- sos_hormones_panel |>
+  pivot_wider(names_from = Time, values_from = c(DHEA_log, Testosterone_log, Cortisol_log), values_fn = mean) |>
+  mutate(
+    dhea_peak = if_else(DHEA_log_3         > DHEA_log_4,         DHEA_log_3,         DHEA_log_4),
+    test_peak = if_else(Testosterone_log_3 > Testosterone_log_4, Testosterone_log_3, Testosterone_log_4),
+    cort_peak = if_else(Cortisol_log_3     > Cortisol_log_4,     Cortisol_log_3,     Cortisol_log_4)
+  )
+
+make_peak_long <- function(wide_data, t1_col, peak_col, value_name) {
+  wide_data |>
+    select(SampleID, all_of(c(t1_col, peak_col))) |>
+    pivot_longer(all_of(c(t1_col, peak_col)), names_to = "time_point", values_to = value_name) |>
+    mutate(time_point = factor(time_point, levels = c(t1_col, peak_col), labels = c("T1", "T3/T4 peak")))
+}
+
+fmt_p_fdr <- function(p) {
+  if (p < 0.001) "p_FDR < 0.001" else paste0("p_FDR = ", round(p, 3))
+}
+
+biomarker_plot <- function(data, y_col, y_label, p_fdr) {
+  ggplot(data, aes(x = time_point, y = .data[[y_col]])) +
+    stat_halfeye(
+      aes(fill = time_point),
+      adjust = 0.5, width = 0.6, .width = 0,
+      justification = -0.2, point_colour = NA, alpha = 0.8
+    ) +
+    geom_boxplot(width = 0.15, outlier.shape = NA, color = "gray30", linewidth = 0.5) +
+    geom_point(
+      aes(color = time_point),
+      position = position_jitter(seed = 1, width = 0.1),
+      size = 1.2, alpha = 0.3
+    ) +
+    scale_fill_viridis_d() +
+    scale_color_viridis_d(guide = "none") +
+    geom_signif(
+      comparisons = list(c("T1", "T3/T4 peak")),
+      annotations = fmt_p_fdr(p_fdr),
+      textsize = 3.2, vjust = -0.2
+    ) +
+    ylab(y_label) + xlab(NULL) + theme_minimal() + theme(legend.position = "none")
+}
+
+sos_crp_long  <- make_peak_long(sos_crp_wide,       "CRP_log_1",          "crp_peak",  "crp_log_conc")
+sos_il10_long <- make_peak_long(sos_cytokines_wide,  "IL10_log_1",         "il10_peak", "il10_log_conc")
+sos_il6_long  <- make_peak_long(sos_cytokines_wide,  "IL6_log_1",          "il6_peak",  "il6_log_conc")
+sos_tnfa_long <- make_peak_long(sos_cytokines_wide,  "TNFalpha_log_1",     "tnfa_peak", "tnfa_log_conc")
+sos_dhea_long <- make_peak_long(sos_hormones_wide,   "DHEA_log_1",         "dhea_peak", "dhea_log_conc")
+sos_test_long <- make_peak_long(sos_hormones_wide,   "Testosterone_log_1", "test_peak", "test_log_conc")
+sos_cort_long <- make_peak_long(sos_hormones_wide,   "Cortisol_log_1",     "cort_peak", "cort_log_conc")
+
+run_peak_test <- function(peak_col, t1_col, data) {
+  t.test(data[[peak_col]], data[[t1_col]], alternative = "greater", paired = TRUE)
+}
+
+crp_difference <- sos_crp_wide |>
+  mutate(crp_difference = crp_peak - CRP_log_1) |>
+  select(SampleID, crp_difference)
+
+cytokines_difference <- sos_cytokines_wide |>
+  mutate(
+    il10_difference = il10_peak - IL10_log_1,
+    il6_difference  = il6_peak  - IL6_log_1,
+    tnfa_difference = tnfa_peak - TNFalpha_log_1
+  ) |>
+  select(SampleID, il10_difference, il6_difference, tnfa_difference)
+
+hormones_difference <- sos_hormones_wide |>
+  mutate(
+    dhea_difference = dhea_peak - DHEA_log_1,
+    test_difference = test_peak - Testosterone_log_1,
+    cort_difference = cort_peak - Cortisol_log_1
+  ) |>
+  select(SampleID, dhea_difference, test_difference, cort_difference)
+
+biomarkers_difference <- crp_difference |>
+  full_join(cytokines_difference, by = "SampleID") |>
+  full_join(hormones_difference,  by = "SampleID")
+
+bio_all_difference <- hr_difference |>
+  full_join(biomarkers_difference, by = "SampleID")
+
+# Subjective stress data not yet available; will be added when CSV is accessible
+all_difference <- bio_all_difference
+
+# Peak t-tests and FDR correction (immune and hormones corrected separately)
+peak_tests_raw <- list(
+  crp  = run_peak_test("crp_peak",  "CRP_log_1",          sos_crp_wide),
+  il10 = run_peak_test("il10_peak", "IL10_log_1",         sos_cytokines_wide),
+  il6  = run_peak_test("il6_peak",  "IL6_log_1",          sos_cytokines_wide),
+  tnfa = run_peak_test("tnfa_peak", "TNFalpha_log_1",     sos_cytokines_wide),
+  dhea = run_peak_test("dhea_peak", "DHEA_log_1",         sos_hormones_wide),
+  test = run_peak_test("test_peak", "Testosterone_log_1", sos_hormones_wide),
+  cort = run_peak_test("cort_peak", "Cortisol_log_1",     sos_hormones_wide)
+)
+peak_praw <- map_dbl(peak_tests_raw, \(t) t$p.value)
+peak_pfdr <- setNames(
+  c(p.adjust(peak_praw[1:4], method = "fdr"),
+    p.adjust(peak_praw[5:7], method = "fdr")),
+  names(peak_praw)
+)
+```
+
+---
+
+# Heart Rate
+
+## Descriptive Means
+
+```{r hr-descriptives}
+tibble(
+  Condition = c(
+    "Resting 1", "Resting 2", "Resting Average", "Task (overall)",
+    "Within-task: Rest", "Within-task: Other",
+    "Within-task: Self-Disconnected", "Within-task: Self-Connected"
+  ),
+  `Mean HR (bpm)` = round(c(
+    mean(hr_all_wide$`Resting 1`),
+    mean(hr_all_wide$`Resting 2`, na.rm = TRUE),
+    mean(hr_all_wide$resting_avg),
+    mean(hr_all_wide$Task),
+    mean(pull_hr("Rest")),
+    mean(pull_hr("Other")),
+    mean(pull_hr("Self-Disconnected")),
+    mean(pull_hr("Self-Connected"))
+  ), 2)
+) |>
+  kable()
+```
+
+## HR Difference Score Descriptives
+
+```{r hr-diff-descriptives}
+bind_rows(
+  hr_difference |> select(-SampleID) |> summarise(across(everything(), \(x) mean(x, na.rm = TRUE))) |> mutate(stat = "Mean"),
+  hr_difference |> select(-SampleID) |> summarise(across(everything(), \(x) sd(x,   na.rm = TRUE))) |> mutate(stat = "SD")
+) |>
+  select(stat, everything()) |>
+  rename(
+    `ΔHR: Task vs. Rest`  = task_rs_hr_diff,
+    `ΔHR: SC vs. SD`      = conn_dis_hr_diff,
+    `ΔHR: SC vs. Other`   = conn_other_hr_diff,
+    `ΔHR: SC vs. Rest`    = conn_rest_hr_diff
+  ) |>
+  kable(digits = 3, caption = "HR reactivity difference scores (positive = higher during more self-connected/active condition)")
+```
+
+## Paired t-tests
+
+```{r hr-ttests}
+hr_ttest_tbl <- list(
+  "Task vs. Resting" = t.test(hr_all_wide$Task, hr_all_wide$resting_avg, alternative = "greater", paired = TRUE),
+  "Self-Connected vs. Rest" = t.test(pull_hr("Self-Connected"), pull_hr("Rest"), alternative = "greater", paired = TRUE),
+  "Self-Connected vs. Self-Disconnected" = t.test(pull_hr("Self-Connected"), pull_hr("Self-Disconnected"), alternative = "greater", paired = TRUE),
+  "Self-Connected vs. Other" = t.test(pull_hr("Self-Connected"), pull_hr("Other"), alternative = "greater", paired = TRUE)
+) |>
+  map(broom::tidy) |>
+  list_rbind(names_to = "comparison") |>
+  select(comparison, estimate, statistic, parameter, p.value) |>
+  mutate(across(where(is.numeric), \(x) round(x, 3)))
+
+hr_ttest_tbl |>
+  mutate(p.value = cell_spec(p.value, bold = p.value < 0.05,
+    color = if_else(p.value < 0.05, "#2166ac", "black"))) |>
+  kable(col.names = c("Comparison", "Mean diff", "t", "df", "p"), escape = FALSE) |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+## Plots {.tabset}
+
+### Task vs. Resting
+
+```{r avg-hr-plot, fig.width=5, fig.height=5}
+hr_avg_long <- hr_all_wide |>
+  select(id, resting_avg, Task) |>
+  pivot_longer(
+    c(resting_avg, Task),
+    names_to = "condition",
+    values_to = "mean_hr"
+  ) |>
+  mutate(
+    condition = factor(
+      condition,
+      levels = c("resting_avg", "Task"),
+      labels = c("Resting State Scan", "SOS Task")
+    )
+  )
+
+ggplot(hr_avg_long, aes(x = condition, y = mean_hr)) +
+  stat_halfeye(
+    aes(fill = condition),
+    adjust = 0.5,
+    width = 0.6,
+    .width = 0,
+    justification = -0.2,
+    point_colour = NA,
+    alpha = 0.8
+  ) +
+  geom_boxplot(
+    width = 0.15,
+    outlier.shape = NA,
+    color = "gray30",
+    linewidth = 0.5
+  ) +
+  geom_point(
+    aes(color = condition),
+    position = position_jitter(seed = 1, width = 0.1),
+    size = 1.2,
+    alpha = 0.3
+  ) +
+  scale_fill_viridis_d() +
+  scale_color_viridis_d(guide = "none") +
+  stat_compare_means(
+    method = "t.test",
+    paired = TRUE,
+    comparisons = list(c("Resting State Scan", "SOS Task")),
+    method.args = list(alternative = "greater")
+  ) +
+  ylab("Mean Heart Rate (bpm)") +
+  xlab(NULL) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+### Within-task Conditions
+
+```{r task-hr-plot, fig.width=7, fig.height=5}
+task_hr_comparisons <- list(
+  c("Self-Connected", "Rest"), c("Self-Connected", "Self-Disconnected"),
+  c("Self-Connected", "Other"), c("Self-Disconnected", "Other"),
+  c("Self-Disconnected", "Rest"), c("Other", "Rest")
+)
+
+ggplot(hr_conditions_avg, aes(x = task_condition, y = mean_hr)) +
+  stat_halfeye(
+    aes(fill = task_condition),
+    adjust = 0.5, width = 0.6, .width = 0,
+    justification = -0.2, point_colour = NA, alpha = 0.8
+  ) +
+  geom_boxplot(width = 0.15, outlier.shape = NA, color = "gray30", linewidth = 0.5) +
+  geom_point(
+    aes(color = task_condition),
+    position = position_jitter(seed = 1, width = 0.1),
+    size = 1.2, alpha = 0.3
+  ) +
+  scale_fill_viridis_d() +
+  scale_color_viridis_d(guide = "none") +
+  stat_compare_means(
+    method = "t.test", paired = TRUE, comparisons = task_hr_comparisons,
+    method.args = list(alternative = "greater")
+  ) +
+  ylab("Mean Heart Rate (bpm)") + xlab(NULL) + theme_minimal() + theme(legend.position = "none")
+```
+
+---
+
+# Salivary Biomarkers: Time Trends
+
+Models test whether Time linearly or quadratically predicts each biomarker. Quadratic was the better fit for most analytes.
+
+## Model Comparison (AIC / BIC)
+
+```{r model-comparison}
+mlm_list <- list(
+  CRP = mlm_crp, `IL-10` = mlm_il10, `IL-6` = mlm_il6, `TNF-alpha` = mlm_tnfalpha,
+  DHEA = mlm_dhea, Testosterone = mlm_test, Cortisol = mlm_cort
+)
+
+model_comp_tbl <- imap_dfr(mlm_list, function(res, name) {
+  tibble(
+    Analyte = name,
+    Model   = c("Linear", "Quadratic"),
+    df      = res$aic$df,
+    AIC     = round(res$aic$AIC, 1),
+    BIC     = round(res$bic$BIC, 1)
+  )
+})
+
+best_rows <- model_comp_tbl |>
+  group_by(Analyte) |>
+  mutate(is_best = AIC == min(AIC)) |>
+  ungroup() |>
+  pull(is_best)
+
+model_comp_tbl |>
+  kable() |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE) |>
+  row_spec(which(best_rows), bold = TRUE, color = "#2166ac")
+```
+
+## Fixed Effects: Quadratic Models {.tabset}
+
+```{r quad-fixed-effects, results='asis'}
+iwalk(mlm_list, function(res, name) {
+  cat("\n\n### ", name, "\n\n")
+  tbl <- broom.mixed::tidy(res$quadratic, effects = "fixed") |>
+    mutate(across(where(is.numeric), \(x) round(x, 3)))
+  tbl |>
+    mutate(p.value = cell_spec(p.value, bold = p.value < 0.05,
+      color = if_else(p.value < 0.05, "#2166ac", "black"))) |>
+    kable(escape = FALSE) |>
+    kable_styling(bootstrap_options = "hover", full_width = FALSE) |>
+    print()
+})
+```
+
+## Quadratic Curves
+
+```{r quad-plots, fig.width=10, fig.height=4}
+cytokines_long <- sos_cytokines_panel |>
+  pivot_longer(c(IL10_log, IL6_log, TNFalpha_log), names_to = "biomarker", values_to = "log_conc") |>
+  mutate(biomarker = case_match(
+    biomarker,
+    "IL10_log"     ~ "IL-10",
+    "IL6_log"      ~ "IL-6",
+    "TNFalpha_log" ~ "TNF-\u03b1"
+  ))
+
+cytokines_quad_plot <- ggplot(cytokines_long, aes(Time, log_conc, color = biomarker)) +
+  stat_smooth(method = "lm", formula = y ~ x + I(x^2), linewidth = 1,
+              aes(fill = after_scale(colour)), alpha = 0.2) +
+  scale_colour_viridis_d() +
+  ylab("Concentration (log-transformed)") + xlab("Time point") + ggtitle("Cytokines") + theme_minimal()
+
+hormones_long <- sos_hormones_panel |>
+  pivot_longer(c(DHEA_log, Testosterone_log, Cortisol_log), names_to = "biomarker", values_to = "log_conc") |>
+  mutate(biomarker = case_match(
+    biomarker,
+    "DHEA_log"         ~ "DHEA",
+    "Testosterone_log" ~ "Testosterone",
+    "Cortisol_log"     ~ "Cortisol"
+  ))
+
+hormones_quad_plot <- ggplot(hormones_long, aes(Time, log_conc, color = biomarker)) +
+  stat_smooth(method = "lm", formula = y ~ x + I(x^2), linewidth = 1,
+              aes(fill = after_scale(colour)), alpha = 0.2) +
+  scale_colour_viridis_d() +
+  ylab("Concentration (log-transformed)") + xlab("Time point") + ggtitle("Hormones") + theme_minimal()
+
+ggarrange(cytokines_quad_plot, hormones_quad_plot, ncol = 2)
+```
+
+---
+
+# Reactivity: Peak (T3/T4) vs. Baseline (T1)
+
+Each person's peak is the higher of T3 or T4. Reactivity score = peak − T1 (positive = increase from baseline).
+
+## Peak vs. T1 t-tests
+
+```{r peak-ttests}
+peak_ttest_tbl <- peak_tests_raw |>
+  map(broom::tidy) |>
+  list_rbind(names_to = "analyte") |>
+  mutate(analyte = case_match(
+    analyte,
+    "crp" ~ "CRP", "il10" ~ "IL-10", "il6" ~ "IL-6", "tnfa" ~ "TNF-alpha",
+    "dhea" ~ "DHEA", "test" ~ "Testosterone", "cort" ~ "Cortisol"
+  )) |>
+  select(analyte, estimate, statistic, parameter, p.value) |>
+  mutate(across(where(is.numeric), \(x) round(x, 3)))
+
+peak_ttest_tbl |>
+  mutate(p.value = cell_spec(p.value, bold = p.value < 0.05,
+    color = if_else(p.value < 0.05, "#2166ac", "black"))) |>
+  kable(col.names = c("Analyte", "Mean diff (peak − T1)", "t", "df", "p (one-tailed)"), escape = FALSE) |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+## FDR Correction
+
+```{r fdr}
+fdr_tbl <- tibble(
+  group   = c(rep("Immune", 4), rep("Hormones", 3)),
+  analyte = c("CRP", "IL-10", "IL-6", "TNF-alpha", "DHEA", "Testosterone", "Cortisol"),
+  p_raw   = round(peak_praw, 6),
+  p_fdr   = peak_pfdr
+)
+
+fdr_tbl |>
+  mutate(p_fdr = cell_spec(round(p_fdr, 4), bold = p_fdr < 0.05,
+    color = if_else(p_fdr < 0.05, "#2166ac", "black"))) |>
+  kable(col.names = c("Group", "Analyte", "p (raw)", "p (FDR)"), escape = FALSE) |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+## Immune Markers {.tabset}
+
+### All (grid)
+
+```{r immune-grid, fig.width=10, fig.height=9}
+crp_plot  <- biomarker_plot(sos_crp_long,  "crp_log_conc",  "CRP (log-transformed)",        peak_pfdr["crp"])
+il10_plot <- biomarker_plot(sos_il10_long, "il10_log_conc", "IL-10 (log-transformed)",       peak_pfdr["il10"])
+il6_plot  <- biomarker_plot(sos_il6_long,  "il6_log_conc",  "IL-6 (log-transformed)",        peak_pfdr["il6"])
+tnfa_plot <- biomarker_plot(sos_tnfa_long, "tnfa_log_conc", "TNF-\u03b1 (log-transformed)",  peak_pfdr["tnfa"])
+
+ggarrange(crp_plot, il10_plot, il6_plot, tnfa_plot,
+  labels = c("CRP", "IL-10", "IL-6", "TNF-alpha"), ncol = 2, nrow = 2)
+```
+
+### CRP
+
+```{r crp-plot, fig.width=5, fig.height=5}
+crp_plot
+```
+
+### IL-10
+
+```{r il10-plot, fig.width=5, fig.height=5}
+il10_plot
+```
+
+### IL-6
+
+```{r il6-plot, fig.width=5, fig.height=5}
+il6_plot
+```
+
+### TNF-alpha
+
+```{r tnfa-plot, fig.width=5, fig.height=5}
+tnfa_plot
+```
+
+## Hormones {.tabset}
+
+### All (grid)
+
+```{r hormone-grid, fig.width=12, fig.height=5}
+dhea_plot <- biomarker_plot(sos_dhea_long, "dhea_log_conc", "DHEA (log-transformed)",          peak_pfdr["dhea"])
+test_plot <- biomarker_plot(sos_test_long, "test_log_conc", "Testosterone (log-transformed)",   peak_pfdr["test"])
+cort_plot <- biomarker_plot(sos_cort_long, "cort_log_conc", "Cortisol (log-transformed)",       peak_pfdr["cort"])
+
+ggarrange(dhea_plot, test_plot, cort_plot,
+  labels = c("DHEA", "Testosterone", "Cortisol"), ncol = 3, nrow = 1)
+```
+
+### DHEA
+
+```{r dhea-plot, fig.width=5, fig.height=5}
+dhea_plot
+```
+
+### Testosterone
+
+```{r test-plot, fig.width=5, fig.height=5}
+test_plot
+```
+
+### Cortisol
+
+```{r cort-plot, fig.width=5, fig.height=5}
+cort_plot
+```
+
+## Reactivity Descriptives
+
+```{r reactivity-descriptives}
+bind_rows(
+  biomarkers_difference |> select(-SampleID) |> summarise(across(everything(), \(x) mean(x, na.rm = TRUE))) |> mutate(stat = "Mean"),
+  biomarkers_difference |> select(-SampleID) |> summarise(across(everything(), \(x) sd(x,   na.rm = TRUE))) |> mutate(stat = "SD")
+) |>
+  select(stat, everything()) |>
+  rename(
+    ΔCRP           = crp_difference,
+    `ΔIL-10`       = il10_difference,
+    `ΔIL-6`        = il6_difference,
+    `ΔTNF-α`       = tnfa_difference,
+    ΔDHEA          = dhea_difference,
+    ΔTestosterone  = test_difference,
+    ΔCortisol      = cort_difference
+  ) |>
+  kable(digits = 3)
+```
+
+---
+
+# Correlations: Reactivity Measures
+
+HR and biomarker reactivity difference scores. *Subjective stress ratings will be added once data are available.*
+
+```{r corr-matrix, fig.width=8, fig.height=7}
+diff_matrix <- all_difference |> select(-SampleID) |> as.matrix()
+colnames(diff_matrix) <- c(
+  "ΔHR: Task vs. Rest", "ΔHR: SC vs. SD", "ΔHR: SC vs. Other", "ΔHR: SC vs. Rest",
+  "ΔCRP", "ΔIL-10", "ΔIL-6", "ΔTNF-α", "ΔDHEA", "ΔTestosterone", "ΔCortisol"
+)
+difference_corrs <- cor(diff_matrix, use = "pairwise.complete.obs")
+
+corrplot(
+  difference_corrs,
+  method = "number",
+  tl.col = "black",
+  col    = colorRampPalette(c("#FDE725FF", "#29AF7FFF", "#440154FF"))(100)
+)
+```
+
+## Correlation p-values
+
+```{r corr-pvalues}
+difference_rcorrs <- rcorr(diff_matrix)
+
+difference_rcorrs$P |>
+  as.data.frame() |>
+  mutate(across(everything(), \(x) round(x, 3))) |>
+  mutate(across(everything(), \(x) {
+    sig  <- !is.na(x) & x < 0.05
+    xlab <- if_else(is.na(x), "—", as.character(x))
+    cell_spec(xlab, bold = sig, color = if_else(sig, "#2166ac", "black"))
+  })) |>
+  kable(escape = FALSE) |>
+  kable_styling(bootstrap_options = "hover")
+```

@@ -1,0 +1,6 @@
+archive/
+.Rhistory
+.DS_Store
+*.xlsx
+*.html
+data/

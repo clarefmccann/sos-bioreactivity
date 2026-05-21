@@ -1,0 +1,380 @@
+---
+title: "SOS Study — Questionnaire Psychometrics"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+pacman::p_load(
+  "dplyr", "tidyr", "purrr", "here",
+  "psych",        # alpha(), omega(), describe()
+  "knitr", "kableExtra"
+)
+
+options(knitr.table.format = "html", scipen = 999)
+
+proj_path <- here()
+quest_path <- file.path(proj_path, "data", "SOS_questionnaire_data.csv")
+```
+
+```{r load-data}
+quest_raw <- read.csv(quest_path) |>
+  rename(SampleID = SID) |>
+  mutate(across(-SampleID, \(x) suppressWarnings(as.numeric(x))))
+
+cat("N participants:", nrow(quest_raw), "\n")
+```
+
+---
+
+# CES-DC
+
+**Center for Epidemiological Studies Depression Scale for Children** (Weissman et al., 1980).
+20 items, 0–3 scale. Items 4, 8, 12, 16 are positively worded and reverse-scored (3 – item).
+Total range 0–60; clinical cutoff ≥ 15.
+
+```{r cesdc-score}
+cesdc_items <- quest_raw |>
+  select(SampleID, starts_with("CES_DC_")) |>
+  mutate(
+    CES_DC_4  = 3 - CES_DC_4,
+    CES_DC_8  = 3 - CES_DC_8,
+    CES_DC_12 = 3 - CES_DC_12,
+    CES_DC_16 = 3 - CES_DC_16
+  )
+
+cesdc_mat <- cesdc_items |> select(-SampleID) |> as.matrix()
+
+cesdc_scores <- cesdc_items |>
+  mutate(CESDC_total = rowSums(cesdc_mat, na.rm = FALSE)) |>
+  select(SampleID, CESDC_total)
+```
+
+## Item descriptives
+
+```{r cesdc-item-desc}
+describe(cesdc_mat) |>
+  as.data.frame() |>
+  select(n, mean, sd, min, max, skew, kurtosis) |>
+  mutate(across(where(is.numeric), \(x) round(x, 2))) |>
+  kable(caption = "CES-DC item descriptives (after reverse-scoring)") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+## Internal consistency
+
+```{r cesdc-alpha}
+cesdc_alpha <- alpha(cesdc_mat, check.keys = FALSE)
+print(cesdc_alpha, digits = 3)
+```
+
+```{r cesdc-alpha-tbl}
+tibble(
+  Statistic = c("α (raw)", "α (std.)", "95% CI lower", "95% CI upper",
+                "Mean inter-item r", "Median inter-item r"),
+  Value = c(
+    round(cesdc_alpha$total$raw_alpha,  3),
+    round(cesdc_alpha$total$std.alpha,  3),
+    round(cesdc_alpha$feldt$lower.ci$raw_alpha, 3),
+    round(cesdc_alpha$feldt$upper.ci$raw_alpha, 3),
+    round(cesdc_alpha$total$average_r,   3),
+    round(cesdc_alpha$total$median_r,    3)
+  )
+) |>
+  kable(caption = "CES-DC internal consistency") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+## Item-total correlations
+
+```{r cesdc-item-total}
+cesdc_alpha$item.stats |>
+  select(r.cor, r.drop) |>
+  mutate(across(everything(), \(x) round(x, 3))) |>
+  rename(`r (corrected item-total)` = r.cor,
+         `r (α if item dropped)`   = r.drop) |>
+  kable(caption = "CES-DC item-total correlations") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+## Total score descriptives
+
+```{r cesdc-total-desc}
+describe(cesdc_scores$CESDC_total) |>
+  as.data.frame() |>
+  select(n, mean, sd, min, max, skew, kurtosis) |>
+  mutate(across(where(is.numeric), \(x) round(x, 2))) |>
+  kable(caption = "CES-DC total score (0–60; cutoff ≥ 15)") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+
+cat("N above cutoff (≥ 15):",
+    sum(cesdc_scores$CESDC_total >= 15, na.rm = TRUE),
+    sprintf("(%.1f%%)", 100 * mean(cesdc_scores$CESDC_total >= 15, na.rm = TRUE)), "\n")
+```
+
+---
+
+# Puberty
+
+## Pubertal Development Scale (PDS)
+
+**Petersen et al. (1988), female version.** Items F1–F5 rated 1–4 (1 = no development,
+4 = development seems complete). Item F6 = menarche (0 = no, 1 = yes). Items F7–F10
+capture menarche timing (free-text / age fields) and are excluded from the scale score.
+
+PDS total score = mean of F1–F5; menarche status reported separately.
+
+```{r pds-score}
+pds_items <- quest_raw |>
+  select(SampleID, PDS_F1, PDS_F2, PDS_F3, PDS_F4, PDS_F5, PDS_F6)
+
+pds_mat <- pds_items |> select(PDS_F1:PDS_F5) |> as.matrix()
+
+pds_scores <- pds_items |>
+  mutate(
+    PDS_mean     = rowMeans(pds_mat, na.rm = FALSE),
+    PDS_menarche = PDS_F6
+  ) |>
+  select(SampleID, PDS_mean, PDS_menarche)
+```
+
+### Item descriptives (F1–F5)
+
+```{r pds-item-desc}
+describe(pds_mat) |>
+  as.data.frame() |>
+  select(n, mean, sd, min, max, skew, kurtosis) |>
+  mutate(across(where(is.numeric), \(x) round(x, 2))) |>
+  kable(caption = "PDS items F1–F5 descriptives (1 = no development, 4 = complete)") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+
+cat("Menarche: yes =", sum(pds_items$PDS_F6 == 1, na.rm = TRUE),
+    ", no =", sum(pds_items$PDS_F6 == 0, na.rm = TRUE), "\n")
+```
+
+### Internal consistency (F1–F5)
+
+```{r pds-alpha}
+pds_alpha <- alpha(pds_mat, check.keys = TRUE)
+print(pds_alpha, digits = 3)
+```
+
+```{r pds-alpha-tbl}
+tibble(
+  Statistic = c("α (raw)", "α (std.)", "95% CI lower", "95% CI upper",
+                "Mean inter-item r"),
+  Value = c(
+    round(pds_alpha$total$raw_alpha,   3),
+    round(pds_alpha$total$std.alpha,   3),
+    round(pds_alpha$feldt$lower.ci$raw_alpha, 3),
+    round(pds_alpha$feldt$upper.ci$raw_alpha, 3),
+    round(pds_alpha$total$average_r,   3)
+  )
+) |>
+  kable(caption = "PDS internal consistency (items F1–F5)") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+### Item-total correlations (F1–F5)
+
+```{r pds-item-total}
+pds_alpha$item.stats |>
+  select(r.cor, r.drop) |>
+  mutate(across(everything(), \(x) round(x, 3))) |>
+  rename(`r (corrected item-total)` = r.cor,
+         `r (α if item dropped)`   = r.drop) |>
+  kable(caption = "PDS item-total correlations") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+### Total score descriptives
+
+```{r pds-total-desc}
+describe(pds_scores$PDS_mean) |>
+  as.data.frame() |>
+  select(n, mean, sd, min, max, skew, kurtosis) |>
+  mutate(across(where(is.numeric), \(x) round(x, 2))) |>
+  kable(caption = "PDS mean score (F1–F5; range 1–4)") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+---
+
+## Pubertal Body Image (PBIP)
+
+**Pubertal Body Image Perception** (PBIP; Koff & Rierdan, 1995). 4 items (1A, 1B, 2A, 2B),
+rated 2–5. Higher scores indicate more advanced perceived pubertal development.
+
+```{r pbip-score}
+pbip_items <- quest_raw |>
+  select(SampleID, PBIP_1A, PBIP_1B, PBIP_2A, PBIP_2B)
+
+pbip_mat <- pbip_items |> select(-SampleID) |> as.matrix()
+
+pbip_scores <- pbip_items |>
+  mutate(PBIP_mean = rowMeans(pbip_mat, na.rm = FALSE)) |>
+  select(SampleID, PBIP_mean)
+```
+
+### Item descriptives
+
+```{r pbip-item-desc}
+describe(pbip_mat) |>
+  as.data.frame() |>
+  select(n, mean, sd, min, max, skew, kurtosis) |>
+  mutate(across(where(is.numeric), \(x) round(x, 2))) |>
+  kable(caption = "PBIP item descriptives (2–5)") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+### Internal consistency
+
+```{r pbip-alpha}
+pbip_alpha <- alpha(pbip_mat, check.keys = TRUE)
+print(pbip_alpha, digits = 3)
+```
+
+```{r pbip-alpha-tbl}
+tibble(
+  Statistic = c("α (raw)", "α (std.)", "95% CI lower", "95% CI upper",
+                "Mean inter-item r"),
+  Value = c(
+    round(pbip_alpha$total$raw_alpha,   3),
+    round(pbip_alpha$total$std.alpha,   3),
+    round(pbip_alpha$feldt$lower.ci$raw_alpha, 3),
+    round(pbip_alpha$feldt$upper.ci$raw_alpha, 3),
+    round(pbip_alpha$total$average_r,   3)
+  )
+) |>
+  kable(caption = "PBIP internal consistency") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+### Item-total correlations
+
+```{r pbip-item-total}
+pbip_alpha$item.stats |>
+  select(r.cor, r.drop) |>
+  mutate(across(everything(), \(x) round(x, 3))) |>
+  rename(`r (corrected item-total)` = r.cor,
+         `r (α if item dropped)`   = r.drop) |>
+  kable(caption = "PBIP item-total correlations") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+### Total score descriptives
+
+```{r pbip-total-desc}
+describe(pbip_scores$PBIP_mean) |>
+  as.data.frame() |>
+  select(n, mean, sd, min, max, skew, kurtosis) |>
+  mutate(across(where(is.numeric), \(x) round(x, 2))) |>
+  kable(caption = "PBIP mean score (range 2–5)") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+---
+
+# BFNES
+
+**Brief Fear of Negative Evaluation Scale** (Leary, 1983). 12 items, 1–5 scale.
+Items 2, 6, 7, 10 are reverse-scored (6 – item). Sum total range 12–60;
+higher scores indicate greater fear of negative evaluation.
+
+```{r bfnes-score}
+bfnes_items <- quest_raw |>
+  select(SampleID, starts_with("BFNES_")) |>
+  mutate(
+    BFNES_2  = 6 - BFNES_2,
+    BFNES_6  = 6 - BFNES_6,
+    BFNES_7  = 6 - BFNES_7,
+    BFNES_10 = 6 - BFNES_10
+  )
+
+bfnes_mat <- bfnes_items |> select(-SampleID) |> as.matrix()
+
+bfnes_scores <- bfnes_items |>
+  mutate(BFNES_total = rowSums(bfnes_mat, na.rm = FALSE)) |>
+  select(SampleID, BFNES_total)
+```
+
+## Item descriptives
+
+```{r bfnes-item-desc}
+describe(bfnes_mat) |>
+  as.data.frame() |>
+  select(n, mean, sd, min, max, skew, kurtosis) |>
+  mutate(across(where(is.numeric), \(x) round(x, 2))) |>
+  kable(caption = "BFNES item descriptives (after reverse-scoring; 1–5)") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+## Internal consistency
+
+```{r bfnes-alpha}
+bfnes_alpha <- alpha(bfnes_mat, check.keys = FALSE)
+print(bfnes_alpha, digits = 3)
+```
+
+```{r bfnes-alpha-tbl}
+tibble(
+  Statistic = c("α (raw)", "α (std.)", "95% CI lower", "95% CI upper",
+                "Mean inter-item r", "Median inter-item r"),
+  Value = c(
+    round(bfnes_alpha$total$raw_alpha,   3),
+    round(bfnes_alpha$total$std.alpha,   3),
+    round(bfnes_alpha$feldt$lower.ci$raw_alpha, 3),
+    round(bfnes_alpha$feldt$upper.ci$raw_alpha, 3),
+    round(bfnes_alpha$total$average_r,   3),
+    round(bfnes_alpha$total$median_r,    3)
+  )
+) |>
+  kable(caption = "BFNES internal consistency") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+## Item-total correlations
+
+```{r bfnes-item-total}
+bfnes_alpha$item.stats |>
+  select(r.cor, r.drop) |>
+  mutate(across(everything(), \(x) round(x, 3))) |>
+  rename(`r (corrected item-total)` = r.cor,
+         `r (α if item dropped)`   = r.drop) |>
+  kable(caption = "BFNES item-total correlations") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+## Total score descriptives
+
+```{r bfnes-total-desc}
+describe(bfnes_scores$BFNES_total) |>
+  as.data.frame() |>
+  select(n, mean, sd, min, max, skew, kurtosis) |>
+  mutate(across(where(is.numeric), \(x) round(x, 2))) |>
+  kable(caption = "BFNES total score (12–60)") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+---
+
+# Scored totals summary
+
+```{r all-totals}
+list(cesdc_scores, pds_scores, pbip_scores, bfnes_scores) |>
+  reduce(full_join, by = "SampleID") |>
+  select(-SampleID) |>
+  describe() |>
+  as.data.frame() |>
+  select(n, mean, sd, min, max, skew, kurtosis) |>
+  mutate(across(where(is.numeric), \(x) round(x, 2))) |>
+  kable(caption = "All scale totals — descriptive summary") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```

@@ -831,71 +831,110 @@ bio_all_difference <- hr_difference |>
 # Subjective stress ratings  (data not yet available — commented out)
 # ==============================================================================
 
-# sos_subj_stress <- read.csv(
-#   file.path(
-#     proj_path,
-#     "TAG/data/SOS/questionnaires/sos_subjective_stress_ratings.csv"
-#   )
-# )
-#
-# subj_stress_long <- sos_subj_stress |>
-#   pivot_longer(
-#     c(selfconnected_subj_stress, selfdisconnected_subj_stress, other_subj_stress),
-#     names_to = "condition", values_to = "stress"
-#   ) |>
-#   mutate(
-#     condition = factor(
-#       condition,
-#       levels = c("selfconnected_subj_stress", "selfdisconnected_subj_stress", "other_subj_stress"),
-#       labels = c("Self-Connected", "Self-Disconnected", "Other")
-#     )
-#   )
-#
-# # dplyr-based replacement for the plyr::summarySE pattern
-# summarize_se <- function(data, measure_var, group_vars = NULL, na.rm = FALSE, conf.interval = 0.95) {
-#   data |>
-#     group_by(across(all_of(group_vars))) |>
-#     summarise(
-#       n             = sum(!is.na(.data[[measure_var]])),
-#       !!measure_var := mean(.data[[measure_var]], na.rm = na.rm),
-#       sd             = sd(.data[[measure_var]], na.rm = na.rm),
-#       .groups = "drop"
-#     ) |>
-#     mutate(se = sd / sqrt(n), ci = se * qt(conf.interval / 2 + 0.5, n - 1))
-# }
-#
-# summary_subj <- summarize_se(subj_stress_long, measure_var = "stress", group_vars = "condition", na.rm = TRUE)
-#
-# subj_comparisons <- list(
-#   c("Self-Connected", "Self-Disconnected"),
-#   c("Self-Connected", "Other"),
-#   c("Self-Disconnected", "Other")
-# )
-#
-# subj_plot <- ggplot(summary_subj, aes(x = condition, y = stress, fill = condition)) +
-#   geom_bar(position = position_dodge(), stat = "identity") +
-#   geom_errorbar(aes(ymin = stress - se, ymax = stress + se), width = 0.2, position = position_dodge(0.9)) +
-#   scale_fill_viridis_d() +
-#   stat_summary(
-#     fun.data = make_box_stats(subj_stress_long, "stress"),
-#     geom = "text", hjust = 0.5, vjust = 0.3, size = 3, na.rm = TRUE
-#   ) +
-#   stat_compare_means(
-#     data = subj_stress_long, method = "wilcox.test", paired = TRUE,
-#     comparisons = subj_comparisons, method.args = list(alternative = "greater")
-#   ) +
-#   ylab("Mean stress rating") + xlab("Condition") + theme(legend.position = "none")
-#
-# # Difference scores
-# subjective_difference <- sos_subj_stress |>
-#   mutate(
-#     subj_scsd_difference    = selfconnected_subj_stress - selfdisconnected_subj_stress,
-#     subj_scother_difference = selfconnected_subj_stress - other_subj_stress
-#   ) |>
-#   select(SampleID, subj_scsd_difference, subj_scother_difference)
-#
-# summary(subjective_difference)
-# subjective_difference |> select(-SampleID) |> summarise(across(everything(), \(x) sd(x, na.rm = TRUE)))
+sos_subj_stress <- read.csv(
+  file.path(
+    data_path,
+    "SOS/SOS-study-monash/questionnaires/sos_subjective_stress_ratings.csv"
+  )
+)
+
+subj_stress_long <- sos_subj_stress |>
+  pivot_longer(
+    c(
+      selfconnected_subj_stress,
+      selfdisconnected_subj_stress,
+      other_subj_stress
+    ),
+    names_to = "condition",
+    values_to = "stress"
+  ) |>
+  mutate(
+    condition = factor(
+      condition,
+      levels = c(
+        "selfconnected_subj_stress",
+        "selfdisconnected_subj_stress",
+        "other_subj_stress"
+      ),
+      labels = c("Self-Connected", "Self-Disconnected", "Other")
+    )
+  )
+
+# dplyr-based replacement for the plyr::summarySE pattern
+summarize_se <- function(
+  data,
+  measure_var,
+  group_vars = NULL,
+  na.rm = FALSE,
+  conf.interval = 0.95
+) {
+  data |>
+    group_by(across(all_of(group_vars))) |>
+    summarise(
+      n = sum(!is.na(.data[[measure_var]])),
+      !!measure_var := mean(.data[[measure_var]], na.rm = na.rm),
+      sd = sd(.data[[measure_var]], na.rm = na.rm),
+      .groups = "drop"
+    ) |>
+    mutate(se = sd / sqrt(n), ci = se * qt(conf.interval / 2 + 0.5, n - 1))
+}
+
+summary_subj <- summarize_se(
+  subj_stress_long,
+  measure_var = "stress",
+  group_vars = "condition",
+  na.rm = TRUE
+)
+
+subj_comparisons <- list(
+  c("Self-Connected", "Self-Disconnected"),
+  c("Self-Connected", "Other"),
+  c("Self-Disconnected", "Other")
+)
+
+subj_plot <- ggplot(
+  summary_subj,
+  aes(x = condition, y = stress, fill = condition)
+) +
+  geom_bar(position = position_dodge(), stat = "identity") +
+  geom_errorbar(
+    aes(ymin = stress - se, ymax = stress + se),
+    width = 0.2,
+    position = position_dodge(0.9)
+  ) +
+  scale_fill_viridis_d() +
+  stat_summary(
+    fun.data = make_box_stats(subj_stress_long, "stress"),
+    geom = "text",
+    hjust = 0.5,
+    vjust = 0.3,
+    size = 3,
+    na.rm = TRUE
+  ) +
+  stat_compare_means(
+    data = subj_stress_long,
+    method = "wilcox.test",
+    paired = TRUE,
+    comparisons = subj_comparisons,
+    method.args = list(alternative = "greater")
+  ) +
+  ylab("Mean stress rating") +
+  xlab("Condition") +
+  theme(legend.position = "none")
+
+# Difference scores
+subjective_difference <- sos_subj_stress |>
+  mutate(
+    subj_scsd_difference = selfconnected_subj_stress -
+      selfdisconnected_subj_stress,
+    subj_scother_difference = selfconnected_subj_stress - other_subj_stress
+  ) |>
+  select(SampleID, subj_scsd_difference, subj_scother_difference)
+
+summary(subjective_difference)
+subjective_difference |>
+  select(-SampleID) |>
+  summarise(across(everything(), \(x) sd(x, na.rm = TRUE)))
 
 # Subjective difference scores will be added here once data are available;
 # for now all_difference contains only HR + biomarker reactivity

@@ -1,0 +1,1873 @@
+---
+title: "SOS Bioreactivity: Revised Reactivity Analyses (Own Peak/Trough)"
+author: clare f. mccann
+date: today
+format:
+  html:
+    toc: true
+    toc-float: true
+    toc-depth: 3
+    code-fold: true
+    code-summary: "Show code"
+    theme: journal
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup, echo=FALSE}
+# quarto render sos-bioreactivity-reactivity-revised.qmd
+
+pacman::p_load(
+  "dplyr",
+  "tidyr",
+  "stringr",
+  "purrr",
+  "broom",
+  "ggplot2",
+  "ggdist",
+  "ggsignif",
+  "ggpubr",
+  "here",
+  "Hmisc",
+  "corrplot",
+  "knitr",
+  "kableExtra"
+)
+
+proj_path <- here()
+data_path <- Sys.getenv("CAS_DIR") # i have this set as a variable in my home environment. if using this, just update with the actual path of your data
+options(knitr.table.format = "html", scipen = 999)
+
+map     <- purrr::map
+map_dbl <- purrr::map_dbl
+map_dfr <- purrr::map_dfr
+imap    <- purrr::imap
+imap_dfr <- purrr::imap_dfr
+```
+
+---
+
+# Overview
+
+In `sos-bioreactivity-analyses.qmd`, biomarker reactivity was originally operationalized as
+each participant's peak value at **T3 or T4** (whichever was higher) minus their T1 baseline,
+per the manuscript hypothesis. Looking at when participants' biomarker values actually
+peaked across all four timepoints, however, a large share of participants — especially for
+the cytokines (CRP, IL-10, IL-6, TNF-alpha) — peaked at **T2**, not T3/T4. Restricting
+"peak" to T3/T4 misses those people's true peak response and understates reactivity.
+
+This notebook recalculates reactivity as follows:
+
+- **Immune markers (CRP, IL-10, IL-6, TNF-alpha):** reactivity = participant's own maximum
+  value across T1–T4 minus T1, *regardless of which timepoint the maximum occurred at*.
+- **Hormones (DHEA, Testosterone, Cortisol):** these markers trend more like a *dip* than a
+  spike, so reactivity = T1 minus the participant's own minimum value across T1–T4,
+  regardless of timepoint.
+
+Because a person's own peak/trough always includes T1 as one of the four candidate values,
+reactivity can never be negative: it is 0 for anyone whose most extreme value *is* T1 (no
+response in the hypothesized direction), and positive for anyone who moved in that direction
+at some other timepoint. Ties are broken toward the earlier timepoint.
+
+**Everyone with usable data is kept in the reactivity analyses below** — including
+participants with 0 reactivity (no increase/decrease) or reactivity in the "wrong" direction
+relative to hypothesis (still 0, by construction, since own_peak/own_trough can't go past T1
+in the non-hypothesized direction). The only participants dropped are those with
+**"Insufficient data"**: fewer than two non-missing timepoints for that biomarker, or a
+missing T1 value — in either case there's no baseline to compare against, so no reactivity
+score can be computed at all. This is true missing data, not a modeling choice.
+
+This notebook also adds descriptives on the *shape* of each participant's trajectory
+(increased only, decreased only, both, or flat) to better characterize the heterogeneity
+underlying each biomarker's average reactivity.
+
+Beyond the primary reactivity test, this notebook also replicates the puberty, depression
+(CES-DC), social anxiety (BFNES), and exclusionary sensitivity analyses from
+`sos-bioreactivity-analyses.qmd`, recomputed against these revised reactivity scores. Since
+this notebook doesn't load heart-rate or subjective-stress data, those analyses are scoped to
+the 7 biomarker reactivity outcomes only (not the full 13-outcome set in the original
+notebook).
+
+```{r load-data, echo=FALSE}
+sos_cytokines <- read.csv(file.path(
+  data_path,
+  "TAG/data/SOS/saliva/Cleaned_datasets/SOS_cytokines_cleaned.csv"
+))
+sos_crp <- read.csv(file.path(
+  data_path,
+  "TAG/data/SOS/saliva/Cleaned_datasets/SOS_CRP_cleaned.csv"
+))
+sos_hormones <- read.csv(file.path(
+  data_path,
+  "TAG/data/SOS/saliva/Cleaned_datasets/SOS_hormones_cleaned.csv"
+)) |>
+  select(-starts_with("Estradiol"))
+```
+
+```{r biomarker-panels, echo=FALSE}
+sos_crp_panel       <- sos_crp       |> select(SampleID, Time, CRP_log)
+sos_cytokines_panel <- sos_cytokines |> select(SampleID, Time, IL10_log, IL6_log, TNFalpha_log)
+sos_hormones_panel  <- sos_hormones  |> select(SampleID, Time, DHEA_log, Testosterone_log, Cortisol_log)
+
+sos_crp_wide <- sos_crp_panel |>
+  pivot_wider(
+    names_from = Time,
+    values_from = CRP_log,
+    names_glue = "CRP_log_{Time}",
+    values_fn = mean
+  )
+
+sos_cytokines_wide <- sos_cytokines_panel |>
+  pivot_wider(
+    names_from = Time,
+    values_from = c(IL10_log, IL6_log, TNFalpha_log),
+    values_fn = mean
+  )
+
+sos_hormones_wide <- sos_hormones_panel |>
+  pivot_wider(
+    names_from = Time,
+    values_from = c(DHEA_log, Testosterone_log, Cortisol_log),
+    values_fn = mean
+  )
+```
+
+```{r peak-trough-functions, echo=FALSE}
+compute_peak_trough <- function(wide_data, cols) {
+  wide_data |>
+    select(SampleID, all_of(cols)) |>
+    pivot_longer(-SampleID, names_to = "time_point", values_to = "value") |>
+    mutate(time_point = paste0("T", str_extract(time_point, "\\d$"))) |>
+    group_by(SampleID) |>
+    summarise(
+      n_avail     = sum(!is.na(value)),
+      t1_value    = value[time_point == "T1"],
+      own_peak    = if (n_avail >= 2) max(value, na.rm = TRUE) else NA_real_,
+      peak_time   = if (n_avail >= 2) time_point[which.max(value)] else NA_character_,
+      own_trough  = if (n_avail >= 2) min(value, na.rm = TRUE) else NA_real_,
+      trough_time = if (n_avail >= 2) time_point[which.min(value)] else NA_character_,
+      .groups = "drop"
+    ) |>
+    mutate(
+      trend = case_when(
+        is.na(t1_value) | n_avail < 2                ~ "Insufficient data",
+        own_peak > t1_value & own_trough < t1_value   ~ "Mixed (increase & decrease)",
+        own_peak > t1_value                           ~ "Increased only",
+        own_trough < t1_value                         ~ "Decreased only",
+        TRUE                                           ~ "No change"
+      )
+    )
+}
+
+# direction = "peak" for markers hypothesized to spike (immune); "trough" for markers
+# hypothesized to dip (hormones). `included` marks participants eligible for the
+# confirmatory reactivity test in that direction.
+add_reactivity <- function(peak_trough_df, direction = c("peak", "trough")) {
+  direction <- match.arg(direction)
+  if (direction == "peak") {
+    peak_trough_df |>
+      mutate(
+        own_extreme  = own_peak,
+        extreme_time = peak_time,
+        reactivity   = own_peak - t1_value,
+        included     = trend %in% c("Mixed (increase & decrease)", "Increased only")
+      )
+  } else {
+    peak_trough_df |>
+      mutate(
+        own_extreme  = own_trough,
+        extreme_time = trough_time,
+        reactivity   = t1_value - own_trough,
+        included     = trend %in% c("Mixed (increase & decrease)", "Decreased only")
+      )
+  }
+}
+
+fmt_p_fdr   <- function(p) if (p < 0.001) "p[FDR] < 0.001" else paste0("p[FDR] == ", round(p, 4))
+fmt_p_plain <- function(p) if (p < 0.001) "p < 0.001" else sprintf("p = %.3f", p)
+```
+
+```{r reactivity-processing, echo=FALSE}
+biomarker_specs <- list(
+  CRP          = list(wide = sos_crp_wide,       cols = paste0("CRP_log_", 1:4),          direction = "peak",   label = "CRP (log-transformed)"),
+  `IL-10`      = list(wide = sos_cytokines_wide,  cols = paste0("IL10_log_", 1:4),         direction = "peak",   label = "IL-10 (log-transformed)"),
+  `IL-6`       = list(wide = sos_cytokines_wide,  cols = paste0("IL6_log_", 1:4),          direction = "peak",   label = "IL-6 (log-transformed)"),
+  `TNF-alpha`  = list(wide = sos_cytokines_wide,  cols = paste0("TNFalpha_log_", 1:4),     direction = "peak",   label = "TNF-α (log-transformed)"),
+  DHEA         = list(wide = sos_hormones_wide,   cols = paste0("DHEA_log_", 1:4),         direction = "trough", label = "DHEA (log-transformed)"),
+  Testosterone = list(wide = sos_hormones_wide,   cols = paste0("Testosterone_log_", 1:4), direction = "trough", label = "Testosterone (log-transformed)"),
+  Cortisol     = list(wide = sos_hormones_wide,   cols = paste0("Cortisol_log_", 1:4),     direction = "trough", label = "Cortisol (log-transformed)")
+)
+
+all_reactivity <- imap_dfr(biomarker_specs, function(spec, name) {
+  compute_peak_trough(spec$wide, spec$cols) |>
+    add_reactivity(spec$direction) |>
+    mutate(biomarker = name)
+}) |>
+  mutate(biomarker = factor(biomarker, levels = names(biomarker_specs)))
+```
+
+---
+
+# Individual-Level Trend Patterns
+
+## Trend Classification
+
+Each participant's trajectory (T1–T4) is classified by comparing their own maximum and
+minimum value to their T1 baseline: **Increased only** (a higher value appeared, but nothing
+fell below T1), **Decreased only** (a lower value appeared, but nothing rose above T1),
+**Mixed** (both occurred — the trajectory both rose above and fell below baseline at
+different timepoints), or **No change** (every value equaled T1).
+
+```{r trend-table}
+trend_tbl <- all_reactivity |>
+  mutate(trend = factor(trend, levels = c(
+    "Increased only", "Decreased only", "Mixed (increase & decrease)",
+    "No change", "Insufficient data"
+  ))) |>
+  count(biomarker, trend, .drop = FALSE) |>
+  group_by(biomarker) |>
+  mutate(pct = round(100 * n / sum(n), 1)) |>
+  ungroup()
+
+trend_tbl |>
+  mutate(display = paste0(n, " (", pct, "%)")) |>
+  select(biomarker, trend, display) |>
+  pivot_wider(names_from = trend, values_from = display) |>
+  arrange(biomarker) |>
+  kable(caption = "Trajectory shape by biomarker (n, % of full sample)") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+```{r trend-plot, fig.width=10, fig.height=6}
+ggplot(trend_tbl, aes(x = trend, y = pct, fill = trend)) +
+  geom_col() +
+  geom_text(aes(label = n), vjust = -0.3, size = 3) +
+  scale_fill_viridis_d(guide = "none") +
+  facet_wrap(~biomarker, nrow = 2) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(x = NULL, y = "% of participants") +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 30, hjust = 1, size = 7)
+  )
+```
+
+## Timepoint of Peak/Trough (Responders Only)
+
+Among participants who *did* show a response in the hypothesized direction (i.e., those
+included in the reactivity test below), the timepoint at which their own peak (immune) or
+trough (hormones) occurred:
+
+```{r extreme-time-table}
+extreme_time_tbl <- all_reactivity |>
+  filter(included) |>
+  mutate(extreme_time = factor(extreme_time, levels = paste0("T", 1:4))) |>
+  count(biomarker, extreme_time, .drop = FALSE) |>
+  group_by(biomarker) |>
+  mutate(pct = round(100 * n / sum(n), 1)) |>
+  ungroup()
+
+extreme_time_tbl |>
+  mutate(display = paste0(n, " (", pct, "%)")) |>
+  select(biomarker, extreme_time, display) |>
+  pivot_wider(names_from = extreme_time, values_from = display, values_fill = "0 (0%)") |>
+  arrange(biomarker) |>
+  kable(caption = "Timepoint of each responder's own peak (immune) or trough (hormones)") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+---
+
+# Reactivity Analyses
+
+*Reactivity is redefined as: (own peak − T1) for immune markers, and (T1 − own trough) for
+hormones. Everyone with a computable reactivity score is analyzed — including participants
+with 0 reactivity — except those with "Insufficient data" (see Overview).*
+
+## Sample Sizes (Analyzed vs. Insufficient Data)
+
+```{r inclusion-summary}
+inclusion_summary <- all_reactivity |>
+  group_by(biomarker) |>
+  summarise(
+    n_total        = n(),
+    n_insufficient = sum(trend == "Insufficient data"),
+    n_analyzed     = n_total - n_insufficient,
+    n_responded    = sum(included),
+    n_zero         = n_analyzed - n_responded,
+    pct_analyzed   = round(100 * n_analyzed / n_total, 1),
+    .groups = "drop"
+  )
+
+inclusion_summary |>
+  kable(
+    col.names = c("biomarker", "N total", "N insufficient data", "N analyzed",
+                   "N responded (reactivity > 0)", "N zero reactivity", "% analyzed"),
+    caption = "Participants analyzed in the reactivity test vs. excluded for insufficient data, by biomarker"
+  ) |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+```{r inclusion-results-vals, echo=FALSE, include=FALSE}
+inclusion_sentence <- inclusion_summary |>
+  mutate(txt = paste0(biomarker, ": ", n_analyzed, "/", n_total, " (", pct_analyzed, "%)")) |>
+  pull(txt) |>
+  paste(collapse = "; ")
+
+insufficient_sentence <- inclusion_summary |>
+  filter(n_insufficient > 0) |>
+  mutate(txt = paste0(biomarker, " (n = ", n_insufficient, ")")) |>
+  pull(txt) |>
+  paste(collapse = "; ")
+```
+
+**Results.** The proportion of participants with a computable reactivity score (i.e.,
+excluding only those with insufficient data — fewer than two non-missing timepoints, or a
+missing T1) was: `r inclusion_sentence`. Participants excluded for insufficient data:
+`r if (nchar(insufficient_sentence) > 0) insufficient_sentence else "none"`. Everyone else is
+included in the test below, whether or not they showed a response in the hypothesized
+direction (non-responders simply contribute a reactivity score of 0).
+
+## Paired t-tests (Own Peak/Trough vs. T1)
+
+```{r reactivity-ttests}
+run_reactivity_test <- function(df) t.test(df$reactivity, mu = 0, alternative = "greater")
+
+reactivity_tests <- all_reactivity |>
+  filter(trend != "Insufficient data") |>
+  group_by(biomarker) |>
+  group_map(~ run_reactivity_test(.x), .keep = TRUE) |>
+  set_names(levels(all_reactivity$biomarker))
+
+reactivity_ttest_tbl <- reactivity_tests |>
+  map(broom::tidy) |>
+  list_rbind(names_to = "biomarker") |>
+  select(biomarker, estimate, statistic, parameter, p.value) |>
+  mutate(across(where(is.numeric), \(x) round(x, 3)))
+
+reactivity_ttest_tbl |>
+  mutate(p.value = cell_spec(p.value, bold = p.value < 0.05,
+    color = if_else(p.value < 0.05, "#2166ac", "black"))) |>
+  kable(col.names = c("biomarker", "Mean reactivity", "t", "df", "p (one-tailed)"), escape = FALSE) |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+> **Note on interpretation.** Reactivity is bounded at 0 by construction (a person's own
+> peak/trough can't fall past T1 in the non-hypothesized direction), so this one-sample test
+> (reactivity > 0) is a legitimate, non-circular test of whether the average response across
+> the *whole* analyzable sample — responders and non-responders alike — is reliably greater
+> than zero.
+
+## FDR Correction
+
+```{r fdr}
+peak_praw <- reactivity_ttest_tbl$p.value
+names(peak_praw) <- reactivity_ttest_tbl$biomarker
+peak_pfdr <- c(
+  p.adjust(peak_praw[1:4], method = "fdr"),
+  p.adjust(peak_praw[5:7], method = "fdr")
+)
+
+fdr_tbl <- tibble(
+  group     = c(rep("Immune", 4), rep("Hormones", 3)),
+  biomarker = names(biomarker_specs),
+  p_raw     = round(peak_praw, 6),
+  p_fdr     = peak_pfdr
+)
+
+fdr_tbl |>
+  mutate(p_fdr = cell_spec(round(p_fdr, 4), bold = p_fdr < 0.05,
+    color = if_else(p_fdr < 0.05, "#2166ac", "black"))) |>
+  kable(col.names = c("Group", "biomarker", "p (raw)", "p (FDR)"), escape = FALSE) |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+## Reactivity Descriptives
+
+```{r reactivity-descriptives}
+all_reactivity |>
+  filter(trend != "Insufficient data") |>
+  group_by(biomarker) |>
+  summarise(
+    n    = n(),
+    Mean = round(mean(reactivity, na.rm = TRUE), 3),
+    SD   = round(sd(reactivity,   na.rm = TRUE), 3),
+    Min  = round(min(reactivity,  na.rm = TRUE), 3),
+    Max  = round(max(reactivity,  na.rm = TRUE), 3),
+    .groups = "drop"
+  ) |>
+  kable(caption = "Reactivity score descriptives across all analyzed participants (0 for non-responders)") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+---
+
+```{r plot-function, echo=FALSE}
+make_reactivity_long <- function(df) {
+  df |>
+    filter(trend != "Insufficient data") |>
+    select(SampleID, t1_value, own_extreme) |>
+    pivot_longer(c(t1_value, own_extreme), names_to = "time_point", values_to = "log_conc") |>
+    mutate(time_point = factor(time_point,
+      levels = c("t1_value", "own_extreme"),
+      labels = c("T1", "Own peak/trough")
+    ))
+}
+
+biomarker_plot <- function(data, y_label, p_fdr, n_analyzed, n_total) {
+  ggplot(data, aes(x = time_point, y = log_conc)) +
+    stat_halfeye(
+      aes(fill = time_point),
+      adjust = 0.5, width = 0.6, .width = 0,
+      justification = -0.2, point_colour = NA, alpha = 0.8
+    ) +
+    geom_boxplot(width = 0.15, outlier.shape = NA, color = "gray30", linewidth = 0.5) +
+    geom_point(
+      aes(color = time_point),
+      position = position_jitter(seed = 1, width = 0.1),
+      size = 1.2, alpha = 0.3
+    ) +
+    scale_fill_viridis_d() +
+    scale_color_viridis_d(guide = "none") +
+    geom_signif(
+      comparisons = list(c("T1", "Own peak/trough")),
+      annotations = fmt_p_fdr(p_fdr),
+      textsize = 3.5, vjust = 0.1, tip_length = 0.02, parse = TRUE
+    ) +
+    ylab(y_label) +
+    xlab(NULL) +
+    labs(subtitle = paste0("n = ", n_analyzed, " of ", n_total, " analyzed (non-responders included at 0)")) +
+    theme_minimal() +
+    theme(legend.position = "none",
+          plot.margin = margin(t = 20, r = 5, b = 5, l = 5))
+}
+
+biomarker_plots <- imap(biomarker_specs, function(spec, name) {
+  df         <- filter(all_reactivity, biomarker == name)
+  n_analyzed <- sum(df$trend != "Insufficient data")
+  n_total    <- nrow(df)
+  make_reactivity_long(df) |>
+    biomarker_plot(spec$label, peak_pfdr[[name]], n_analyzed, n_total)
+})
+```
+
+# Immune Markers {.tabset}
+
+### All (grid)
+
+```{r immune-grid, fig.width=10, fig.height=9}
+ggarrange(
+  biomarker_plots[["CRP"]], biomarker_plots[["IL-10"]],
+  biomarker_plots[["IL-6"]], biomarker_plots[["TNF-alpha"]],
+  labels = c("CRP", "IL-10", "IL-6", "TNF-alpha"), ncol = 2, nrow = 2,
+  hjust = -0.3, vjust = 2
+)
+```
+
+### CRP
+
+```{r crp-plot, fig.width=5, fig.height=5}
+biomarker_plots[["CRP"]]
+```
+
+### IL-10
+
+```{r il10-plot, fig.width=5, fig.height=5}
+biomarker_plots[["IL-10"]]
+```
+
+### IL-6
+
+```{r il6-plot, fig.width=5, fig.height=5}
+biomarker_plots[["IL-6"]]
+```
+
+### TNF-alpha
+
+```{r tnfa-plot, fig.width=5, fig.height=5}
+biomarker_plots[["TNF-alpha"]]
+```
+
+# Hormones {.tabset}
+
+### All (grid)
+
+```{r hormone-grid, fig.width=12, fig.height=5}
+ggarrange(
+  biomarker_plots[["DHEA"]], biomarker_plots[["Testosterone"]], biomarker_plots[["Cortisol"]],
+  labels = c("DHEA", "Testosterone", "Cortisol"), ncol = 3, nrow = 1,
+  hjust = -0.3, vjust = 2
+)
+```
+
+### DHEA
+
+```{r dhea-plot, fig.width=5, fig.height=5}
+biomarker_plots[["DHEA"]]
+```
+
+### Testosterone
+
+```{r test-plot, fig.width=5, fig.height=5}
+biomarker_plots[["Testosterone"]]
+```
+
+### Cortisol
+
+```{r cort-plot, fig.width=5, fig.height=5}
+biomarker_plots[["Cortisol"]]
+```
+
+---
+
+```{r extra-data-load, echo=FALSE}
+dob_session_raw <- read.csv(file.path(
+  data_path, "SOS/SOS-study-monash/questionnaires/SOS_DOB_sessiondate.csv"
+)) |>
+  mutate(SampleID = sub("_", "", subject_spit_id))
+
+age_df <- dob_session_raw |>
+  filter(redcap_event_name == "ongoing_records_arm_1") |>
+  select(SampleID, dob) |>
+  mutate(dob = as.Date(dob)) |>
+  inner_join(
+    dob_session_raw |>
+      filter(redcap_event_name == "sos_arm_1") |>
+      select(SampleID, sos_session_date) |>
+      mutate(sos_session_date = as.Date(sos_session_date)),
+    by = "SampleID"
+  ) |>
+  mutate(age_at_session = as.numeric(sos_session_date - dob) / 365.25) |>
+  select(SampleID, age_at_session) |>
+  semi_join(
+    bind_rows(sos_crp_panel, sos_cytokines_panel, sos_hormones_panel),
+    by = "SampleID"
+  )
+
+dep <- read.csv(file.path(
+  data_path, "SOS/SOS-study-monash/questionnaires/CESD_total.csv"
+)) |>
+  select(SampleID, CESD_total)
+
+quest_raw_q <- read.csv(file.path(proj_path, "data", "SOS_questionnaire_data.csv"))
+bfnes <- quest_raw_q |>
+  select(SampleID = SID, starts_with("BFNES_")) |>
+  mutate(across(starts_with("BFNES_"), \(x) suppressWarnings(as.numeric(x)))) |>
+  mutate(
+    BFNES_2     = 6 - BFNES_2,   # reverse-scored items: 2, 4, 7
+    BFNES_4     = 6 - BFNES_4,
+    BFNES_7     = 6 - BFNES_7,
+    BFNES_total = rowSums(across(starts_with("BFNES_")), na.rm = FALSE)
+  ) |>
+  select(SampleID, BFNES_total)
+
+sos_session_runner <- read.csv(file.path(
+  data_path, "SOS/SOS-study-monash/questionnaires/sos-session-runner-qual-data.csv"
+))
+
+illness <- read.csv(file.path(
+  data_path, "SOS/SOS-study-monash/SOS_medsNillness.csv"
+)) |>
+  mutate(ill_yn = nzchar(sicklast24hrs)) |>
+  rename(SampleID = sid)
+
+bmi <- read.csv(file.path(
+  data_path, "SOS/SOS-study-monash/sos-bmi.csv"
+)) |>
+  rename(SampleID = 1) |>
+  mutate(SampleID = case_when(
+    SampleID == "SOS068" ~ "TAG068",
+    SampleID == "SOS076" ~ "TAG076",
+    .default = SampleID
+  ))
+
+oral_health <- read.csv(
+  file.path(data_path, "SOS/SOS-study-monash/questionnaires/sos-session-runner-qual-data.csv"),
+  header = TRUE
+) |>
+  select(saliva_1, saliva_5, saliva_6, saliva_7, saliva_8) |>
+  setNames(c("SampleID", "last_ate", "last_brushed", "gum_soreness", "bleeding_gums")) |>
+  filter(grepl("^(TAG|SOS)\\d{3}", SampleID)) |>
+  mutate(
+    SampleID      = sub("^SOS", "TAG", SampleID),
+    gum_soreness  = suppressWarnings(as.numeric(gum_soreness)),
+    bleeding_gums = as.integer(bleeding_gums == "1")
+  )
+
+smoking <- sos_session_runner |>
+  select(saliva_1, saliva_11) |>
+  setNames(c("SampleID", "smokes")) |>
+  filter(grepl("^(TAG|SOS)\\d{3}", SampleID)) |>
+  mutate(
+    SampleID = sub("^SOS", "TAG", SampleID),
+    smokes   = (smokes == "3")
+  )
+
+ill_ids        <- illness |> filter(ill_yn) |> pull(SampleID)
+excl_clean_ids <- ill_ids |>
+  union(oral_health |> filter(bleeding_gums == 1) |> pull(SampleID)) |>
+  union(smoking     |> filter(smokes)             |> pull(SampleID))
+```
+
+```{r puberty-load, echo=FALSE}
+sos_puberty <- read.csv(here::here("data", "SOS-pubcomp.csv")) |>
+  select(SampleID = SID, PUBcomp)
+
+pds_full_raw <- read.csv(file.path(
+  data_path, "SOS/SOS-study-monash/questionnaires/CESD_PDS.csv"
+))
+
+pds_f5_df <- pds_full_raw |>
+  select(SampleID, PDS_F5) |>
+  mutate(PDS_F5 = suppressWarnings(as.numeric(PDS_F5)))
+
+timing_base <- sos_puberty |>
+  left_join(age_df, by = "SampleID") |>
+  filter(!is.na(age_at_session))
+
+pds_raw <- pds_full_raw |>
+  select(SampleID, menarche_date_raw = PDS_F9)
+
+parse_menarche_date <- function(x) {
+  x <- trimws(x)
+  x <- gsub("(\\d+)(st|nd|rd|th)", "\\1", x, ignore.case = TRUE)
+  suppressWarnings(lubridate::parse_date_time(
+    x,
+    orders = c("mdy", "mdY", "BdY", "bdY",
+               "YBd", "Ybd", "BY", "bY", "by",
+               "Y", "dBY", "dbY"),
+    quiet  = TRUE
+  ))
+}
+
+dob_df <- dob_session_raw |>
+  filter(redcap_event_name == "ongoing_records_arm_1") |>
+  select(SampleID, dob) |>
+  mutate(dob = as.Date(dob))
+
+menarche_df <- pds_raw |>
+  left_join(dob_df, by = "SampleID") |>
+  mutate(
+    menarche_date = as.Date(parse_menarche_date(menarche_date_raw)),
+    age_menarche  = as.numeric(menarche_date - dob) / 365.25
+  ) |>
+  select(SampleID, age_menarche)
+
+timing_df <- timing_base |>
+  left_join(menarche_df, by = "SampleID") |>
+  left_join(pds_f5_df, by = "SampleID") |>
+  mutate(
+    PUBcomp_c         = PUBcomp         - mean(PUBcomp,         na.rm = TRUE),
+    age_at_session_c  = age_at_session  - mean(age_at_session,  na.rm = TRUE),
+    age_menarche_c    = age_menarche    - mean(age_menarche,    na.rm = TRUE)
+  ) |>
+  select(SampleID, age_at_session, age_at_session_c,
+         PUBcomp, PUBcomp_c, age_menarche, age_menarche_c, PDS_F5)
+```
+
+```{r corrplot-helper, echo=FALSE}
+plot_sig_corrplot <- function(r_mat, p_mat, title = "", type = "upper",
+                              cl.ratio = 0.15, cl.cex = 1.15,
+                              tl.cex = 1.0, mar = NULL, diag = FALSE) {
+  if (is.null(mar)) {
+    mar <- c(0, 0, if (nchar(title) > 0) 2 else 0, 0)
+  }
+  corrplot(
+    r_mat,
+    p.mat     = p_mat,
+    sig.level = 0.05,
+    insig     = "pch",
+    pch       = 4,
+    pch.col   = "black",
+    pch.cex   = 2.5,
+    method    = "circle",
+    type      = type,
+    tl.col    = "black",
+    tl.srt    = 45,
+    tl.cex    = tl.cex,
+    col       = colorRampPalette(c("#d73027", "white", "#4575b4"))(200),
+    diag      = diag,
+    title     = title,
+    mar       = mar,
+    cl.ratio  = cl.ratio,
+    cl.cex    = cl.cex
+  )
+}
+```
+
+```{r biomarkers-difference-wide, echo=FALSE}
+# Wide-format analog of the original notebook's `biomarkers_difference`, built
+# from the revised (own-peak/trough, everyone-but-insufficient-data) reactivity
+# scores computed above, so all downstream puberty/dep/BFNES/sensitivity code
+# below can be ported with the same variable names the original used.
+biomarkers_difference <- all_reactivity |>
+  filter(trend != "Insufficient data") |>
+  select(SampleID, biomarker, reactivity) |>
+  pivot_wider(names_from = biomarker, values_from = reactivity) |>
+  rename(
+    crp_difference  = CRP,
+    il10_difference = `IL-10`,
+    il6_difference  = `IL-6`,
+    tnfa_difference = `TNF-alpha`,
+    dhea_difference = DHEA,
+    test_difference = Testosterone,
+    cort_difference = Cortisol
+  )
+
+reactivity_vars <- c(
+  "crp_difference", "il10_difference", "il6_difference", "tnfa_difference",
+  "dhea_difference", "test_difference", "cort_difference"
+)
+reactivity_labels <- c(
+  "ΔCRP", "ΔIL-10", "ΔIL-6", "ΔTNF-α", "ΔDHEA", "ΔTestosterone", "ΔCortisol"
+)
+imm_cols_react  <- reactivity_labels[1:4]
+horm_cols_react <- reactivity_labels[5:7]
+```
+
+---
+
+# Hypothesis 2: Puberty and Reactivity
+
+*Adapted from `sos-bioreactivity-analyses.qmd`: bivariate Pearson correlations between each of
+the 7 biomarker reactivity outcomes (revised definition) and pubertal status (PDS+line
+drawings composite), plus pubertal timing — age at menarche, PDS F5 perceived timing, and
+status-for-age (status controlling for age).*
+
+```{r puberty-processing, echo=FALSE}
+puberty_reactivity <- biomarkers_difference |>
+  left_join(
+    sos_puberty |> mutate(PUBcomp_c = PUBcomp - mean(PUBcomp, na.rm = TRUE)),
+    by = "SampleID"
+  )
+
+puberty_vars      <- c("PUBcomp")
+puberty_label_map <- c(PUBcomp = "Pubertal Status (Composite)")
+puberty_labels    <- unname(puberty_label_map[puberty_vars])
+
+timing_vars   <- c("age_menarche_c", "PDS_F5")
+timing_labels <- c("Age at menarche (centered, years)",
+                   "PDS F5: perceived timing (1=much earlier, 5=much later)")
+timing_reactivity <- biomarkers_difference |>
+  left_join(timing_df, by = "SampleID")
+```
+
+## Puberty Descriptives
+
+```{r puberty-descriptives}
+sos_puberty |>
+  select(-SampleID) |>
+  summarise(across(everything(), list(
+    Mean = \(x) round(mean(x, na.rm = TRUE), 2),
+    SD   = \(x) round(sd(x,   na.rm = TRUE), 2),
+    Min  = \(x) round(min(x,  na.rm = TRUE), 2),
+    Max  = \(x) round(max(x,  na.rm = TRUE), 2),
+    N    = \(x) sum(!is.na(x))
+  ))) |>
+  pivot_longer(everything(), names_to = c("variable", "stat"), names_sep = "_(?=[^_]+$)") |>
+  pivot_wider(names_from = stat, values_from = value) |>
+  mutate(variable = recode(variable, !!!puberty_label_map)) |>
+  kable(caption = "Puberty variable descriptives") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+## Correlations: All Puberty Variables × Reactivity
+
+Rows include pubertal status (PDS+line drawings composite), age at menarche, and PDS F5
+perceived timing; columns are the 7 biomarker reactivity outcomes.
+
+```{r all-puberty-corr-matrix, fig.width=10, fig.height=4}
+all_pub_vars   <- c(puberty_vars, timing_vars)
+all_pub_labels <- c(puberty_labels, timing_labels)
+
+all_pub_mat <- timing_reactivity |>
+  select(all_of(c(all_pub_vars, reactivity_vars))) |>
+  as.matrix()
+colnames(all_pub_mat) <- c(all_pub_labels, reactivity_labels)
+
+all_pub_corrs   <- rcorr(all_pub_mat)
+pub_react_corrs <- all_pub_corrs
+
+raw_allpub_mat <- all_pub_corrs$P[all_pub_labels, reactivity_labels, drop = FALSE]
+fdr_allpub_mat <- raw_allpub_mat
+for (pv in all_pub_labels) {
+  for (cols in list(imm_cols_react, horm_cols_react)) {
+    fdr_allpub_mat[pv, cols] <- p.adjust(raw_allpub_mat[pv, cols], method = "fdr")
+  }
+}
+
+plot_sig_corrplot(
+  all_pub_corrs$r[all_pub_labels, reactivity_labels, drop = FALSE],
+  fdr_allpub_mat,
+  type = "full", cl.ratio = 0.1, cl.cex = 1.1,
+  tl.cex = 0.95, mar = c(0, 0, 1, 6), diag = TRUE
+)
+```
+
+*X marks indicate non-significant correlations after FDR correction (p~FDR~ ≥ .05). FDR
+applied separately for each puberty/timing variable, within each reactivity domain (immune,
+hormones).*
+
+## Correlation p-values: All Puberty Variables × Reactivity
+
+```{r all-puberty-corr-pvalues}
+fdr_allpub_mat |>
+  as.data.frame() |>
+  mutate(across(everything(), \(x) {
+    sig  <- !is.na(x) & x < 0.05
+    xlab <- if_else(is.na(x), "—", as.character(round(x, 4)))
+    cell_spec(xlab, bold = sig, color = if_else(sig, "#2166ac", "black"))
+  })) |>
+  kable(escape = FALSE,
+        caption = "FDR-adjusted p-values: all puberty variables × reactivity (bold = p_FDR < .05)") |>
+  kable_styling(bootstrap_options = "hover")
+```
+
+## Correlation r-values: All Puberty Variables × Reactivity
+
+```{r all-puberty-corr-rvalues}
+r_mat   <- all_pub_corrs$r[all_pub_labels, reactivity_labels, drop = FALSE]
+sig_mat <- fdr_allpub_mat < 0.05
+
+r_df <- as.data.frame(
+  matrix(
+    mapply(function(r, sig) {
+      cell_spec(round(r, 3), bold = sig, color = if_else(sig, "#2166ac", "black"))
+    }, r_mat, sig_mat),
+    nrow = nrow(r_mat), ncol = ncol(r_mat),
+    dimnames = dimnames(r_mat)
+  )
+)
+
+r_df |>
+  kable(escape = FALSE,
+        caption = "Pearson r: all puberty variables × reactivity (bold = FDR-significant, p_FDR < .05)") |>
+  kable_styling(bootstrap_options = "hover")
+```
+
+```{r all-puberty-results-vals, echo=FALSE, include=FALSE}
+sig_allpub <- expand.grid(pv = all_pub_labels, rv = reactivity_labels, stringsAsFactors = FALSE) |>
+  rowwise() |>
+  mutate(
+    r     = round(r_mat[pv, rv], 3),
+    p_fdr = round(fdr_allpub_mat[pv, rv], 4),
+    sig   = !is.na(p_fdr) & p_fdr < 0.05,
+    label = paste0(pv, " × ", rv, " (r = ", r, ", p~FDR~ = ", p_fdr, ")")
+  ) |>
+  ungroup() |>
+  filter(sig)
+
+n_allpub_pairs_total <- length(all_pub_labels) * length(reactivity_labels)
+n_sig_allpub         <- nrow(sig_allpub)
+sig_allpub_text      <- if (n_sig_allpub == 0) "none survived FDR correction" else
+  paste(sig_allpub$label, collapse = "; ")
+```
+
+**Results.** Across the `r n_allpub_pairs_total` puberty/timing-variable × biomarker-reactivity
+pairs tested (FDR-corrected within immune and hormone reactivity separately),
+`r n_sig_allpub` association`r if (n_sig_allpub != 1) "s" else ""` remained significant after
+correction`r if (n_sig_allpub > 0) paste0(": ", sig_allpub_text) else "."`
+
+## Puberty Status as Predictor of Reactivity
+
+Simple regressions: reactivity ~ pubertal status (mean-centered).
+
+```{r puberty-regressions, results='asis'}
+pv_c <- paste0(puberty_vars, "_c")
+
+for (i in seq_along(puberty_vars)) {
+  pv  <- puberty_vars[i]
+  pvc <- pv_c[i]
+  cat("\n\n###", puberty_labels[i], "(centered)\n\n")
+  reg_tbl <- map_dfr(setNames(reactivity_vars, reactivity_labels), function(rv) {
+    dat <- puberty_reactivity |> select(all_of(c(rv, pvc))) |> na.omit()
+    if (nrow(dat) < 5) return(NULL)
+    fit <- lm(as.formula(paste(rv, "~", pvc)), data = dat)
+    broom::tidy(fit) |>
+      filter(term != "(Intercept)") |>
+      mutate(term = pv, outcome = rv, .before = 1)
+  }, .id = "Reactivity") |>
+    select(Reactivity, estimate, std.error, statistic, p.value) |>
+    mutate(p_fdr = round(p.adjust(p.value, method = "fdr"), 4)) |>
+    mutate(across(c(estimate, std.error, statistic), \(x) round(x, 3))) |>
+    mutate(p.value = round(p.value, 4))
+
+  reg_tbl |>
+    mutate(
+      p.value = as.character(p.value),
+      p_fdr   = cell_spec(p_fdr, bold = !is.na(p_fdr) & p_fdr < 0.05,
+        color = if_else(!is.na(p_fdr) & p_fdr < 0.05, "#2166ac", "black"))
+    ) |>
+    kable(escape = FALSE,
+          col.names = c("Reactivity outcome", "b", "SE", "t", "p (raw)", "p (FDR)")) |>
+    kable_styling(bootstrap_options = "hover", full_width = FALSE) |>
+    print()
+}
+```
+
+## Scatter Plots: Puberty × Biomarker Reactivity
+
+```{r puberty-reactivity-scatter, results='asis', fig.width=10, fig.height=5}
+for (pv in puberty_vars) {
+  pv_label <- puberty_label_map[[pv]]
+  cat("\n\n###", pv_label, "\n\n")
+  pdat <- puberty_reactivity |>
+    select(all_of(c(pv, reactivity_vars))) |>
+    pivot_longer(-all_of(pv), names_to = "biomarker", values_to = "reactivity") |>
+    mutate(biomarker = factor(biomarker, levels = reactivity_vars, labels = reactivity_labels))
+
+  p <- ggplot(pdat, aes(x = .data[[pv]], y = reactivity)) +
+    geom_point(alpha = 0.35, size = 1.5) +
+    geom_smooth(method = "loess", formula = y ~ x, se = TRUE,
+                color = "#440154FF", fill = "#440154FF", alpha = 0.15, linewidth = 0.9) +
+    facet_wrap(~biomarker, nrow = 2, scales = "free_y") +
+    labs(x = pv_label, y = "Reactivity (own peak/trough − T1, log scale)") +
+    theme_minimal(base_size = 10)
+  print(p)
+}
+```
+
+```{r puberty-reactivity-results-vals, echo=FALSE, include=FALSE}
+sig_pub_pairs <- expand.grid(pv = puberty_labels, rv = reactivity_labels, stringsAsFactors = FALSE) |>
+  rowwise() |>
+  mutate(
+    r     = round(all_pub_corrs$r[pv, rv], 2),
+    p_fdr = round(fdr_allpub_mat[pv, rv], 3),
+    sig   = !is.na(p_fdr) & p_fdr < 0.05,
+    label = paste0(pv, " × ", rv, " (r = ", r, ", p~FDR~ = ", p_fdr, ")")
+  ) |>
+  ungroup() |>
+  filter(sig)
+
+n_sig_pub_pairs   <- nrow(sig_pub_pairs)
+sig_pub_pair_text <- if (n_sig_pub_pairs == 0) "none reached statistical significance after FDR correction" else
+  paste(sig_pub_pairs$label, collapse = "; ")
+```
+
+**Results.** Pearson correlations between pubertal status (`r paste(puberty_labels, collapse = ", ")`)
+and the 7 biomarker reactivity outcomes (FDR-corrected within immune and hormone reactivity)
+revealed `r n_sig_pub_pairs` significant association`r if (n_sig_pub_pairs != 1) "s"`:
+`r sig_pub_pair_text`. Simple regression models (using mean-centered status) and scatter plots
+are shown above.
+
+---
+
+# Hypothesis 2 (continued): Pubertal Timing and Reactivity
+
+Pubertal timing is operationalized here as (1) **age at menarche** (lower = earlier onset),
+(2) perceived pubertal timing as reported on the PDS, and (3) a joint regression entering
+centered pubertal status (PUBcomp) and centered age simultaneously, so each coefficient
+controls for the other.
+
+## Descriptives
+
+```{r timing-descriptives}
+timing_df |>
+  select(age_at_session, PUBcomp, PDS_F5, age_menarche) |>
+  psych::describe() |>
+  as.data.frame() |>
+  select(n, mean, sd, min, max, skew, kurtosis) |>
+  mutate(across(where(is.numeric), \(x) round(x, 2))) |>
+  tibble::rownames_to_column("Variable") |>
+  mutate(Variable = recode(Variable,
+    age_at_session = "Age at session (years)",
+    PUBcomp         = "Pubertal status (Composite)",
+    PDS_F5          = "Perceived Pubertal Timing",
+    age_menarche    = "Age at menarche (years)"
+  )) |>
+  kable(caption = "Pubertal timing descriptives") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+## Correlations: Timing × Reactivity
+
+*See the combined puberty correlation matrix above for age-at-menarche and PDS F5
+correlations with all 7 biomarker reactivity outcomes.*
+
+## Timing as Predictor of Reactivity
+
+Each reactivity outcome is regressed on centered pubertal status (PUBcomp) and centered age
+(`age_at_session_c`) simultaneously. The status coefficient reflects status beyond what is
+expected for age (early timing); the `age_at_session_c` coefficient reflects age beyond what
+is expected for status.
+
+```{r timing-regressions, results='asis'}
+timing_joint_tbl <- map_dfr(seq_along(puberty_vars), function(i) {
+  pv       <- puberty_vars[i]
+  pvc      <- paste0(pv, "_c")
+  pv_label <- puberty_labels[i]
+
+  map_dfr(setNames(reactivity_vars, reactivity_labels), function(rv) {
+    dat <- timing_reactivity |>
+      select(all_of(c(rv, pvc, "age_at_session_c"))) |>
+      na.omit()
+    if (nrow(dat) < 5) return(NULL)
+    fit <- lm(as.formula(paste(rv, "~", pvc, "+ age_at_session_c")), data = dat)
+    broom::tidy(fit) |>
+      filter(term != "(Intercept)") |>
+      mutate(
+        term = if_else(term == pvc, paste0(pv_label, " (centered)"), "Age at session (centered)"),
+        across(c(estimate, std.error, statistic), \(x) round(x, 3)),
+        p.value = round(p.value, 4)
+      )
+  }, .id = "Reactivity") |>
+    mutate(measure = pv_label, .before = 1)
+}) |>
+  group_by(measure, term) |>
+  mutate(p_fdr = round(p.adjust(p.value, method = "fdr"), 4)) |>
+  ungroup()
+
+for (ms in unique(timing_joint_tbl$measure)) {
+  cat("\n\n###", ms, "\n\n")
+  for (trm in unique(timing_joint_tbl$term[timing_joint_tbl$measure == ms])) {
+    cat("\n\n####", trm, "\n\n")
+    timing_joint_tbl |>
+      filter(measure == ms, term == trm) |>
+      select(Reactivity, estimate, std.error, statistic, p.value, p_fdr) |>
+      mutate(p_fdr = cell_spec(p_fdr, bold = !is.na(p_fdr) & p_fdr < 0.05,
+        color = if_else(!is.na(p_fdr) & p_fdr < 0.05, "#2166ac", "black"))) |>
+      kable(escape = FALSE,
+            col.names = c("Reactivity outcome", "b", "SE", "t", "p (raw)", "p (FDR)"),
+            caption = paste("Reactivity ~", trm, "+ other term (both centered); FDR within measure × term")) |>
+      kable_styling(bootstrap_options = "hover", full_width = FALSE) |>
+      print()
+  }
+}
+```
+
+```{r timing-results-vals, echo=FALSE, include=FALSE}
+fmt_timing_sig <- function(df) {
+  if (nrow(df) == 0) return("none reached statistical significance after FDR correction")
+  paste(paste0(df$Reactivity, " (*b* = ", df$estimate, ", *p*~FDR~ = ", df$p_fdr, ")"), collapse = "; ")
+}
+
+timing_summary <- lapply(puberty_labels, function(pv_label) {
+  status_term <- paste0(pv_label, " (centered)")
+  sig_status  <- timing_joint_tbl |> filter(measure == pv_label, term == status_term, p_fdr < 0.05)
+  sig_age     <- timing_joint_tbl |> filter(measure == pv_label, term == "Age at session (centered)", p_fdr < 0.05)
+  list(
+    label = pv_label,
+    n_status = nrow(sig_status), status_text = fmt_timing_sig(sig_status),
+    n_age    = nrow(sig_age),    age_text    = fmt_timing_sig(sig_age)
+  )
+})
+
+timing_results_paragraph <- paste(sapply(timing_summary, function(s) {
+  paste0(
+    "For ", s$label, ", ", s$n_status,
+    " outcome", if (s$n_status != 1) "s" else "", " showed a significant status-beyond-age effect (",
+    s$status_text, "), and ", s$n_age,
+    " outcome", if (s$n_age != 1) "s" else "", " showed a significant age-beyond-status effect (",
+    s$age_text, ")."
+  )
+}), collapse = " ")
+```
+
+**Results.** `r timing_results_paragraph` Scatter plots of timing predictors against
+biomarker reactivity outcomes are shown below.
+
+## Scatter Plots: Timing × Biomarker Reactivity
+
+```{r timing-reactivity-scatter, results='asis', fig.width=10, fig.height=5}
+for (tv in timing_vars) {
+  tv_label <- timing_labels[which(timing_vars == tv)]
+  cat("\n\n###", tv_label, "\n\n")
+
+  pdat <- timing_reactivity |>
+    select(all_of(c(tv, reactivity_vars))) |>
+    pivot_longer(-all_of(tv), names_to = "biomarker", values_to = "reactivity") |>
+    mutate(biomarker = factor(biomarker, levels = reactivity_vars, labels = reactivity_labels))
+
+  p <- ggplot(pdat, aes(x = .data[[tv]], y = reactivity)) +
+    geom_point(alpha = 0.35, size = 1.5) +
+    geom_smooth(method = "loess", formula = y ~ x, se = TRUE,
+                color = "#440154FF", fill = "#440154FF", alpha = 0.15, linewidth = 0.9) +
+    facet_wrap(~biomarker, nrow = 2, scales = "free_y") +
+    labs(x = tv_label, y = "Reactivity (own peak/trough − T1, log scale)") +
+    theme_minimal(base_size = 10)
+  print(p)
+}
+```
+
+---
+
+# Hypothesis 3a: Depression and Reactivity
+
+*Adapted from `sos-bioreactivity-analyses.qmd`: Pearson correlations between CES-DC total
+score and each of the 7 biomarker reactivity outcomes (revised definition), FDR-corrected
+within immune and hormone reactivity separately.*
+
+```{r dep-desc}
+dep |>
+  summarise(
+    n    = sum(!is.na(CESD_total)),
+    Mean = round(mean(CESD_total, na.rm = TRUE), 2),
+    SD   = round(sd(CESD_total,   na.rm = TRUE), 2),
+    Min  = round(min(CESD_total,  na.rm = TRUE), 2),
+    Max  = round(max(CESD_total,  na.rm = TRUE), 2)
+  ) |>
+  kable(caption = "CES-DC descriptives") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+```{r dep-reactivity-corr}
+dep_reactivity <- biomarkers_difference |>
+  left_join(dep, by = "SampleID") |>
+  select(-SampleID) |>
+  na.omit()
+
+dep_react_corrs <- map_dfr(setNames(reactivity_vars, reactivity_labels), function(rv) {
+  ct <- cor.test(dep_reactivity[[rv]], dep_reactivity$CESD_total)
+  tibble(r = round(ct$estimate, 3), p_raw = ct$p.value)
+}, .id = "Reactivity") |>
+  mutate(domain = if_else(Reactivity %in% imm_cols_react, "Immune", "Hormones")) |>
+  group_by(domain) |>
+  mutate(p_fdr = round(p.adjust(p_raw, method = "fdr"), 4)) |>
+  ungroup()
+
+dep_react_corrs |>
+  select(Reactivity, r, p_fdr) |>
+  mutate(p_fdr = cell_spec(p_fdr, bold = !is.na(p_fdr) & p_fdr < 0.05,
+    color = if_else(!is.na(p_fdr) & p_fdr < 0.05, "#2166ac", "black"))) |>
+  kable(escape = FALSE, col.names = c("Reactivity outcome", "r", "p (FDR)"),
+        caption = "Correlations: CES-DC × reactivity (FDR-adjusted; bold = p_FDR < .05)") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+```{r dep-reactivity-results-vals, echo=FALSE, include=FALSE}
+sig_dep_react <- dep_react_corrs |> filter(p_fdr < 0.05)
+n_sig_dep_react <- nrow(sig_dep_react)
+dep_react_sig_text <- if (n_sig_dep_react == 0) {
+  "No significant associations were observed after FDR correction"
+} else {
+  paste(paste0(sig_dep_react$Reactivity, " (r = ", sig_dep_react$r, ", p~FDR~ = ", sig_dep_react$p_fdr, ")"),
+        collapse = "; ")
+}
+```
+
+**Results.** CES-DC total score was correlated with each of the 7 biomarker reactivity
+scores. FDR correction was applied within immune (4 tests) and hormone (3 tests) reactivity
+separately. `r if (n_sig_dep_react == 0) "No significant associations survived FDR correction." else paste0(n_sig_dep_react, " significant association", if (n_sig_dep_react != 1) "s were" else " was", " observed: ", dep_react_sig_text, ".")`
+
+---
+
+# Hypothesis 3b: Social Anxiety and Reactivity
+
+*Adapted from `sos-bioreactivity-analyses.qmd`: Pearson correlations between BFNES total
+score and each of the 7 biomarker reactivity outcomes (revised definition), FDR-corrected
+within immune and hormone reactivity separately.*
+
+BFNES = Brief Fear of Negative Evaluation Scale (Leary, 1983); items 2, 6, 7, and 10 are
+reverse-scored; total scores range from 12–60 with higher scores reflecting greater fear of
+negative evaluation.
+
+```{r bfnes-desc}
+bfnes |>
+  filter(!is.na(BFNES_total)) |>
+  summarise(
+    n    = n(),
+    Mean = round(mean(BFNES_total), 2),
+    SD   = round(sd(BFNES_total),   2),
+    Min  = round(min(BFNES_total),  2),
+    Max  = round(max(BFNES_total),  2)
+  ) |>
+  kable(caption = "BFNES descriptives") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+```{r bfnes-reactivity-corr}
+bfnes_reactivity <- biomarkers_difference |>
+  left_join(bfnes, by = "SampleID") |>
+  select(-SampleID) |>
+  na.omit()
+
+bfnes_react_corrs <- map_dfr(setNames(reactivity_vars, reactivity_labels), function(rv) {
+  ct <- cor.test(bfnes_reactivity[[rv]], bfnes_reactivity$BFNES_total)
+  tibble(r = round(ct$estimate, 3), p_raw = ct$p.value)
+}, .id = "Reactivity") |>
+  mutate(domain = if_else(Reactivity %in% imm_cols_react, "Immune", "Hormones")) |>
+  group_by(domain) |>
+  mutate(p_fdr = round(p.adjust(p_raw, method = "fdr"), 4)) |>
+  ungroup()
+
+bfnes_react_corrs |>
+  select(Reactivity, r, p_fdr) |>
+  mutate(p_fdr = cell_spec(p_fdr, bold = !is.na(p_fdr) & p_fdr < 0.05,
+    color = if_else(!is.na(p_fdr) & p_fdr < 0.05, "#2166ac", "black"))) |>
+  kable(escape = FALSE, col.names = c("Reactivity outcome", "r", "p (FDR)"),
+        caption = "Correlations: BFNES × reactivity (FDR-adjusted; bold = p_FDR < .05)") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+```{r bfnes-reactivity-results-vals, echo=FALSE, include=FALSE}
+sig_bfnes_react <- bfnes_react_corrs |> filter(p_fdr < 0.05)
+n_sig_bfnes_react <- nrow(sig_bfnes_react)
+bfnes_react_sig_text <- if (n_sig_bfnes_react == 0) {
+  "No significant associations were observed after FDR correction"
+} else {
+  paste(paste0(sig_bfnes_react$Reactivity, " (r = ", sig_bfnes_react$r, ", p~FDR~ = ", sig_bfnes_react$p_fdr, ")"),
+        collapse = "; ")
+}
+```
+
+**Results.** BFNES total score was correlated with each of the 7 biomarker reactivity
+scores. FDR correction was applied within immune (4 tests) and hormone (3 tests) reactivity
+separately. `r if (n_sig_bfnes_react == 0) "No significant associations survived FDR correction." else paste0(n_sig_bfnes_react, " significant association", if (n_sig_bfnes_react != 1) "s were" else " was", " observed: ", bfnes_react_sig_text, ".")`
+
+---
+
+# Exclusionary Sensitivity Analyses
+
+*Adapted from `sos-bioreactivity-analyses.qmd`'s "Exclusionary Sensitivity Analyses" section:
+re-running the primary reactivity test after excluding participants who were ill, reported
+bleeding gums, or smoke — plus BMI's relationship to reactivity, and a cross-check summarizing
+whether each biomarker's result holds up across all three analyses (primary, illness-excluded,
+bleed+smoke-excluded).*
+
+```{r sens-reactivity-fn, echo=FALSE}
+run_reactivity_test_subset <- function(exclude_ids) {
+  all_reactivity |>
+    filter(trend != "Insufficient data", !SampleID %in% exclude_ids) |>
+    group_by(biomarker) |>
+    group_map(~ t.test(.x$reactivity, mu = 0, alternative = "greater"), .keep = TRUE) |>
+    set_names(levels(all_reactivity$biomarker)) |>
+    map(broom::tidy) |>
+    list_rbind(names_to = "biomarker") |>
+    select(biomarker, estimate, statistic, parameter, p.value)
+}
+```
+
+## Illness Exclusion
+
+Re-running the reactivity one-sample tests (own peak/trough − T1 > 0) after excluding
+participants who were ill at the time of the session.
+
+```{r sens-illness-exclusion, echo=FALSE}
+illness |>
+  count(ill_yn) |>
+  mutate(ill_yn = if_else(ill_yn, "Yes", "No")) |>
+  kable(col.names = c("Ill in last 24 hrs", "n"), caption = "Illness at time of session") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+
+cat("N excluded for illness:", length(ill_ids), "\n")
+```
+
+```{r sens-illness-biomarker-ttests}
+sens_ill_tbl <- run_reactivity_test_subset(ill_ids)
+sens_ill_pfdr <- c(
+  p.adjust(sens_ill_tbl$p.value[1:4], method = "fdr"),
+  p.adjust(sens_ill_tbl$p.value[5:7], method = "fdr")
+)
+sens_ill_tbl <- sens_ill_tbl |>
+  mutate(
+    estimate  = round(estimate, 3),
+    statistic = round(statistic, 3),
+    parameter = round(parameter, 3),
+    p.value   = round(p.value, 6),
+    p_fdr     = round(sens_ill_pfdr, 4)
+  )
+
+sens_ill_tbl |>
+  mutate(p_fdr = cell_spec(p_fdr, bold = p_fdr < 0.05,
+    color = if_else(p_fdr < 0.05, "#2166ac", "black"))) |>
+  kable(col.names = c("biomarker", "Mean reactivity", "t", "df", "p (raw)", "p (FDR)"),
+        escape = FALSE,
+        caption = "Reactivity one-sample tests excluding ill participants") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+## BMI × Biomarker Reactivity
+
+For each biomarker reactivity score, we correlated BMI with the reactivity score in the
+illness-excluded sample.
+
+```{r sens-cov-processing, echo=FALSE}
+cov_immune <- biomarkers_difference |>
+  select(SampleID, crp_difference, il10_difference, il6_difference, tnfa_difference) |>
+  left_join(bmi     |> select(SampleID, BMI),    by = "SampleID") |>
+  left_join(illness |> select(SampleID, ill_yn), by = "SampleID") |>
+  filter(!ill_yn | is.na(ill_yn))
+
+cov_hormones <- biomarkers_difference |>
+  select(SampleID, dhea_difference, test_difference, cort_difference) |>
+  left_join(bmi     |> select(SampleID, BMI),    by = "SampleID") |>
+  left_join(illness |> select(SampleID, ill_yn), by = "SampleID") |>
+  filter(!ill_yn | is.na(ill_yn))
+```
+
+```{r sens-cov-bmi-corr}
+immune_outcomes  <- c("crp_difference", "il10_difference", "il6_difference", "tnfa_difference")
+immune_labels    <- c("ΔCRP", "ΔIL-10", "ΔIL-6", "ΔTNF-α")
+hormone_outcomes <- c("dhea_difference", "test_difference", "cort_difference")
+hormone_labels   <- c("ΔDHEA", "ΔTestosterone", "ΔCortisol")
+
+run_bmi_corr <- function(outcome, data) {
+  dat <- data |> select(all_of(outcome), BMI) |> na.omit()
+  cor.test(dat[[outcome]], dat$BMI)
+}
+
+immune_bmi_fits  <- map(immune_outcomes,  \(o) run_bmi_corr(o, cov_immune))  |> setNames(immune_labels)
+hormone_bmi_fits <- map(hormone_outcomes, \(o) run_bmi_corr(o, cov_hormones)) |> setNames(hormone_labels)
+
+immune_bmi_praw  <- map_dbl(immune_bmi_fits,  \(ct) ct$p.value)
+hormone_bmi_praw <- map_dbl(hormone_bmi_fits, \(ct) ct$p.value)
+immune_bmi_pfdr  <- setNames(p.adjust(immune_bmi_praw,  method = "fdr"), names(immune_bmi_praw))
+hormone_bmi_pfdr <- setNames(p.adjust(hormone_bmi_praw, method = "fdr"), names(hormone_bmi_praw))
+
+bind_rows(
+  tibble(Biomarker = immune_labels,
+         r     = map_dbl(immune_bmi_fits, \(ct) unname(ct$estimate)),
+         p_raw = unname(immune_bmi_praw),
+         p_fdr = unname(immune_bmi_pfdr)),
+  tibble(Biomarker = hormone_labels,
+         r     = map_dbl(hormone_bmi_fits, \(ct) unname(ct$estimate)),
+         p_raw = unname(hormone_bmi_praw),
+         p_fdr = unname(hormone_bmi_pfdr))
+) |>
+  mutate(across(c(r, p_raw, p_fdr), \(x) round(x, 3))) |>
+  mutate(p_fdr = cell_spec(p_fdr, bold = p_fdr < 0.05,
+    color = if_else(p_fdr < 0.05, "#2166ac", "black"))) |>
+  kable(escape = FALSE,
+        col.names = c("Biomarker", "r", "p (raw)", "p (FDR)"),
+        caption = "BMI x biomarker reactivity correlations, illness-excluded (FDR within immune markers / hormones)") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+## Bleeding Gums & Smoking Exclusion
+
+Re-running the reactivity one-sample tests after excluding participants who reported
+bleeding gums OR who smoke, in addition to those who were ill.
+
+```{r sens-bleed-smoke-exclusion, echo=FALSE}
+cat("N excluded (ill + bleeding + smoking):", length(excl_clean_ids), "\n")
+```
+
+```{r sens-bleed-smoke-ttests}
+sens_clean_tbl <- run_reactivity_test_subset(excl_clean_ids)
+sens_clean_pfdr <- c(
+  p.adjust(sens_clean_tbl$p.value[1:4], method = "fdr"),
+  p.adjust(sens_clean_tbl$p.value[5:7], method = "fdr")
+)
+sens_clean_tbl <- sens_clean_tbl |>
+  mutate(
+    estimate  = round(estimate, 3),
+    statistic = round(statistic, 3),
+    parameter = round(parameter, 3),
+    p.value   = round(p.value, 6),
+    p_fdr     = round(sens_clean_pfdr, 4)
+  )
+
+sens_clean_tbl |>
+  mutate(p_fdr = cell_spec(p_fdr, bold = p_fdr < 0.05,
+    color = if_else(p_fdr < 0.05, "#2166ac", "black"))) |>
+  kable(col.names = c("biomarker", "Mean reactivity", "t", "df", "p (raw)", "p (FDR)"),
+        escape = FALSE,
+        caption = "Reactivity one-sample tests: excluding ill, bleeding gums, and smokers") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+## Reactivity Correlations: Illness, Bleeding Gums & Smoking Exclusion
+
+Correlations between each of the 4 immune reactivity measures and all 7 biomarker reactivity
+outcomes, recomputed after excluding participants who were ill, reported bleeding gums, or
+smoke.
+
+```{r sens-corr-clean, fig.width=10, fig.height=4}
+diff_matrix_clean <- biomarkers_difference |>
+  filter(!SampleID %in% excl_clean_ids) |>
+  select(-SampleID) |>
+  as.matrix()
+colnames(diff_matrix_clean) <- reactivity_labels
+
+diff_rcorrs_clean <- rcorr(diff_matrix_clean)
+
+raw_immune_clean_mat <- diff_rcorrs_clean$P[imm_cols_react, reactivity_labels, drop = FALSE]
+fdr_immune_clean_mat <- raw_immune_clean_mat
+for (im in imm_cols_react) {
+  for (cols in list(imm_cols_react, horm_cols_react)) {
+    fdr_immune_clean_mat[im, cols] <- p.adjust(raw_immune_clean_mat[im, cols], method = "fdr")
+  }
+}
+
+# Self-correlation cells (e.g. ΔCRP row x ΔCRP column: r = 1, p = NA from rcorr)
+# must be blanked in both r and p — corrplot cannot handle r non-NA / p NA.
+r_immune_clean_mat <- diff_rcorrs_clean$r[imm_cols_react, reactivity_labels, drop = FALSE]
+self_pairs <- outer(imm_cols_react, reactivity_labels, `==`)
+r_immune_clean_mat[self_pairs]   <- NA
+fdr_immune_clean_mat[self_pairs] <- NA
+
+plot_sig_corrplot(
+  r_immune_clean_mat, fdr_immune_clean_mat,
+  type = "full", cl.ratio = 0.12, cl.cex = 1.1, tl.cex = 0.98, mar = c(0, 0, 1, 5), diag = TRUE
+)
+```
+
+*X marks indicate non-significant correlations after FDR correction (p~FDR~ ≥ .05). FDR
+applied separately for each immune reactivity measure, within each reactivity domain.*
+
+## Puberty Correlations: Illness, Bleeding Gums & Smoking Exclusion
+
+Correlations between pubertal status/timing and the 4 immune reactivity measures,
+recomputed after excluding participants who were ill, reported bleeding gums, or smoke.
+
+```{r sens-puberty-corr-clean, fig.width=8, fig.height=4}
+timing_reactivity_clean <- timing_reactivity |>
+  filter(!SampleID %in% excl_clean_ids)
+
+pub_immune_mat_clean <- timing_reactivity_clean |>
+  select(all_of(c(all_pub_vars, immune_outcomes))) |>
+  as.matrix()
+colnames(pub_immune_mat_clean) <- c(all_pub_labels, immune_labels)
+
+pub_immune_corrs_clean <- rcorr(pub_immune_mat_clean)
+
+raw_pub_immune_clean <- pub_immune_corrs_clean$P[all_pub_labels, immune_labels, drop = FALSE]
+fdr_pub_immune_clean <- raw_pub_immune_clean
+for (pv in all_pub_labels) {
+  fdr_pub_immune_clean[pv, ] <- p.adjust(raw_pub_immune_clean[pv, ], method = "fdr")
+}
+
+plot_sig_corrplot(
+  pub_immune_corrs_clean$r[all_pub_labels, immune_labels, drop = FALSE],
+  fdr_pub_immune_clean,
+  type = "full", cl.ratio = 0.15, cl.cex = 1.1, tl.cex = 1.0, mar = c(0, 0, 1, 4), diag = TRUE
+)
+```
+
+*X marks indicate non-significant correlations after FDR correction (p~FDR~ ≥ .05). FDR
+applied separately for each puberty/timing variable, across the 4 immune reactivity outcomes.*
+
+## Sensitivity Analysis Cross-Check
+
+A single table summarizing whether each biomarker's reactivity result holds across all
+sensitivity analyses. Flagged significant (✓) when p (FDR-corrected within immune / hormone
+family) < .05 for the primary and exclusion analyses. (BMI's correlation with reactivity is
+reported separately above and not folded into this check, since it tests a different
+question — whether BMI relates to reactivity magnitude, not whether reactivity itself is
+significant.)
+
+```{r sens-crosscheck, echo=FALSE}
+biomarker_ref <- tibble(
+  key       = names(biomarker_specs),
+  biomarker = names(biomarker_specs),
+  group     = c(rep("Immune", 4), rep("Hormones", 3))
+)
+
+primary_p <- tibble(key = names(peak_pfdr),         p_primary = unname(peak_pfdr))
+ill_p     <- tibble(key = sens_ill_tbl$biomarker,    p_ill     = sens_ill_tbl$p_fdr)
+clean_p   <- tibble(key = sens_clean_tbl$biomarker,  p_clean   = sens_clean_tbl$p_fdr)
+
+fmt_p_check <- function(p, threshold = 0.05) {
+  if (is.na(p)) return("—")
+  lbl <- if (p < threshold) paste0(round(p, 3), "*") else as.character(round(p, 3))
+  cell_spec(lbl, bold = p < threshold, color = if (p < threshold) "#2166ac" else "black")
+}
+
+bio_cross_raw <- biomarker_ref |>
+  left_join(primary_p, by = "key") |>
+  left_join(ill_p,     by = "key") |>
+  left_join(clean_p,   by = "key") |>
+  mutate(
+    sig_primary = !is.na(p_primary) & p_primary < .05,
+    sig_ill     = !is.na(p_ill)     & p_ill     < .05,
+    sig_clean   = !is.na(p_clean)   & p_clean   < .05,
+    n_sig   = as.integer(sig_primary) + as.integer(sig_ill) + as.integer(sig_clean),
+    n_tests = 3L,
+    consistent = case_when(
+      n_sig == n_tests ~ "All sig",
+      n_sig == 0L      ~ "All ns",
+      TRUE             ~ paste0("Mixed (", n_sig, "/", n_tests, ")")
+    )
+  )
+
+bio_cross_raw |>
+  select(Group = group, biomarker, p_primary, p_ill, p_clean, Consistency = consistent) |>
+  mutate(across(c(p_primary, p_ill, p_clean), \(x) map_chr(x, fmt_p_check))) |>
+  rename(`Primary (FDR)` = p_primary, `Ill excl (FDR)` = p_ill, `Bleed+smoke excl (FDR)` = p_clean) |>
+  mutate(Consistency = cell_spec(
+    Consistency,
+    bold  = Consistency == "All sig",
+    color = case_when(
+      Consistency == "All sig" ~ "#2166ac",
+      Consistency == "All ns"  ~ "gray40",
+      TRUE                     ~ "#d95f02"
+    )
+  )) |>
+  kable(escape = FALSE,
+        caption = "Biomarker reactivity: significance across all sensitivity analyses (* = p < .05)") |>
+  kable_styling(bootstrap_options = c("hover", "striped"), full_width = FALSE)
+```
+
+```{r sens-crosscheck-text, echo=FALSE, include=FALSE}
+n_all_sig <- sum(bio_cross_raw$n_sig == 3)
+n_all_ns  <- sum(bio_cross_raw$n_sig == 0)
+n_mixed   <- nrow(bio_cross_raw) - n_all_sig - n_all_ns
+all_sig_biomarkers <- bio_cross_raw |> filter(n_sig == 3)          |> pull(biomarker) |> paste(collapse = ", ")
+mixed_biomarkers   <- bio_cross_raw |> filter(n_sig > 0 & n_sig < 3) |> pull(biomarker) |> paste(collapse = ", ")
+```
+
+**Results.** Of the 7 biomarkers, `r n_all_sig` showed consistent significant reactivity
+across all three analyses (primary, illness-excluded, and bleed+smoke-excluded)`r if (n_all_sig > 0) paste0(": ", all_sig_biomarkers)`.
+`r n_all_ns` biomarker`r if (n_all_ns != 1) "s"` were consistently non-significant across all
+analyses. `r if (n_mixed > 0) paste0(n_mixed, " biomarker(s) showed mixed results across analyses: ", mixed_biomarkers, ".")`
+
+---
+
+# Sensitivity Analysis: Sample Timing and Peak Location
+
+Saliva samples were not collected at fixed clock times — T2, T3, and T4 each landed at a
+somewhat different number of minutes after T1 for every participant, depending on how each
+session actually ran. Since cytokines (CRP, IL-10, IL-6, TNF-alpha) turned out to peak at T2
+for most participants (see the original peak-timepoint distribution), a natural question is
+whether that's a genuine biological pattern or an artifact of scheduling: e.g., if
+participants whose T2 sample happened to be drawn later were more likely to "catch" their
+peak at T2, that would suggest the T2-peak finding is partly a timing artifact rather than a
+robust kinetic pattern.
+
+```{r timing-load, echo=FALSE}
+parse_hhmm <- function(x) {
+  x     <- trimws(x)
+  parts <- strsplit(x, ":")
+  hrs   <- suppressWarnings(as.numeric(sapply(parts, `[`, 1)))
+  mins  <- suppressWarnings(as.numeric(sapply(parts, function(p) if (length(p) >= 2) p[2] else "0")))
+  mins[is.na(mins)] <- 0
+  ifelse(nzchar(x) & !is.na(hrs), hrs * 60 + mins, NA_real_)
+}
+
+sos_saliva_times <- read.csv(file.path(
+  data_path, "SOS/SOS-study-monash/saliva/Raw_datasets/SOS_sample_report.csv"
+))
+
+saliva_timing <- sos_saliva_times |>
+  rename(SampleID = TAG.ID) |>
+  mutate(
+    SampleID = case_when(
+      SampleID == "SOS068" ~ "TAG068",
+      SampleID == "SOS076" ~ "TAG076",
+      .default = SampleID
+    ),
+    t1i_min = parse_hhmm(X1i_start), t2i_min = parse_hhmm(X2i_start),
+    t3i_min = parse_hhmm(X3i_start), t4i_min = parse_hhmm(X4i_start),
+    t1h_min = parse_hhmm(X1h_start), t2h_min = parse_hhmm(X2h_start),
+    t3h_min = parse_hhmm(X3h_start), t4h_min = parse_hhmm(X4h_start),
+    elapsed_i_T2 = t2i_min - t1i_min, elapsed_i_T3 = t3i_min - t1i_min, elapsed_i_T4 = t4i_min - t1i_min,
+    elapsed_h_T2 = t2h_min - t1h_min, elapsed_h_T3 = t3h_min - t1h_min, elapsed_h_T4 = t4h_min - t1h_min
+  ) |>
+  select(SampleID, t1i_min, t2i_min, t3i_min, t4i_min, t1h_min, t2h_min, t3h_min, t4h_min,
+         starts_with("elapsed_"))
+```
+
+## Actual Sample Collection Times
+
+`i` = immune-tube collection (paired with CRP/cytokine reactivity); `h` = hormone-tube
+collection (paired with hormone reactivity). The two are collected within the same minute for
+nearly everyone, so only modest differences are expected between them.
+
+```{r timing-descriptives-actual}
+saliva_timing |>
+  select(-SampleID) |>
+  summarise(across(everything(), list(
+    Mean = \(x) round(mean(x, na.rm = TRUE), 1),
+    SD   = \(x) round(sd(x,   na.rm = TRUE), 1),
+    Min  = \(x) round(min(x,  na.rm = TRUE), 1),
+    Max  = \(x) round(max(x,  na.rm = TRUE), 1),
+    N    = \(x) sum(!is.na(x))
+  ))) |>
+  pivot_longer(everything(), names_to = c("variable", "stat"), names_sep = "_(?=[^_]+$)") |>
+  pivot_wider(names_from = stat, values_from = value) |>
+  mutate(variable = recode(variable,
+    elapsed_i_T2 = "T1 → T2 (immune tube)",
+    elapsed_i_T3 = "T1 → T3 (immune tube)",
+    elapsed_i_T4 = "T1 → T4 (immune tube)",
+    elapsed_h_T2 = "T1 → T2 (hormone tube)",
+    elapsed_h_T3 = "T1 → T3 (hormone tube)",
+    elapsed_h_T4 = "T1 → T4 (hormone tube)"
+  )) |>
+  kable(caption = "Actual elapsed time (minutes) between saliva collections") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+The plot below places every participant's actual T2/T3/T4 collection time (minutes since
+their own T1 sample; immune tube) on the session clock, alongside the *nominal* protocol
+schedule (approximate, from the study procedure — not individually measured).
+
+```{r timing-overview-plot, fig.width=10, fig.height=5}
+timeline_long <- saliva_timing |>
+  select(SampleID, elapsed_i_T2, elapsed_i_T3, elapsed_i_T4) |>
+  pivot_longer(-SampleID, names_to = "timepoint", values_to = "elapsed_min") |>
+  mutate(timepoint = recode(timepoint,
+    elapsed_i_T2 = "T2", elapsed_i_T3 = "T3", elapsed_i_T4 = "T4"
+  )) |>
+  filter(!is.na(elapsed_min)) |>
+  mutate(timepoint = factor(timepoint, levels = c("T2", "T3", "T4")))
+
+protocol_bands <- tibble(
+  label = c("MRI + SOS Task", "BFNES", "SPLT (computer task)", "Debrief"),
+  xmin  = c(20, 40, 60, 100),
+  xmax  = c(40, 60, 100, 160)
+) |>
+  mutate(xmid = (xmin + xmax) / 2, w = xmax - xmin)
+
+ggplot() +
+  geom_tile(data = protocol_bands, aes(x = xmid, y = "Protocol\n(nominal)", width = w),
+            height = 0.8, fill = "gray80", color = "white") +
+  geom_text(data = protocol_bands, aes(x = xmid, y = "Protocol\n(nominal)", label = label), size = 2.8) +
+  geom_boxplot(data = timeline_long, aes(x = elapsed_min, y = timepoint, fill = timepoint),
+               width = 0.5, outlier.shape = NA, alpha = 0.85) +
+  geom_jitter(data = timeline_long, aes(x = elapsed_min, y = timepoint, color = timepoint),
+              height = 0.15, alpha = 0.3, size = 1) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray40") +
+  scale_fill_viridis_d(guide = "none") +
+  scale_color_viridis_d(guide = "none") +
+  scale_y_discrete(limits = c("Protocol\n(nominal)", "T2", "T3", "T4")) +
+  labs(x = "Minutes since T1 saliva sample (actual, measured)", y = NULL) +
+  theme_minimal() +
+  theme(panel.grid.minor = element_blank())
+```
+
+```{r timing-overview-results-vals, echo=FALSE, include=FALSE}
+med_t2 <- round(median(saliva_timing$elapsed_i_T2, na.rm = TRUE), 1)
+med_t3 <- round(median(saliva_timing$elapsed_i_T3, na.rm = TRUE), 1)
+med_t4 <- round(median(saliva_timing$elapsed_i_T4, na.rm = TRUE), 1)
+```
+
+**Results.** The median actual gap from T1 was `r med_t2` minutes for T2, `r med_t3` minutes
+for T3, and `r med_t4` minutes for T4 — noticeably later, and considerably more variable
+across participants, than the nominal protocol schedule would suggest (which places T2
+immediately after the MRI/task block, around 20 minutes post-T1). Real sessions evidently ran
+behind the nominal schedule, and by a variable amount.
+
+## Does Timing Predict Which Timepoint Captures the Peak?
+
+For each biomarker, we tested whether the actual T1→T2 gap (`elapsed_T2`, matched to the
+appropriate tube) differs between participants whose own peak (immune) or trough (hormones)
+occurred at T2 versus those whose extreme value occurred at T3 or T4. If the T2-peak pattern
+were a timing artifact, participants with a *longer* T1→T2 gap should be disproportionately
+likely to have "caught" their peak at T2. Two-sided Wilcoxon rank-sum tests, FDR-corrected
+within immune (4 tests) and hormone (3 tests) reactivity separately.
+
+```{r timing-peak-sensitivity, echo=FALSE}
+timing_join <- all_reactivity |>
+  filter(trend != "Insufficient data") |>
+  left_join(saliva_timing, by = "SampleID") |>
+  mutate(
+    tube       = if_else(biomarker %in% c("CRP", "IL-10", "IL-6", "TNF-alpha"), "i", "h"),
+    elapsed_T2 = if_else(tube == "i", elapsed_i_T2, elapsed_h_T2),
+    elapsed_T3 = if_else(tube == "i", elapsed_i_T3, elapsed_h_T3),
+    elapsed_T4 = if_else(tube == "i", elapsed_i_T4, elapsed_h_T4)
+  )
+
+run_timing_test <- function(bio_name) {
+  df    <- timing_join |> filter(biomarker == bio_name, !is.na(elapsed_T2))
+  is_t2 <- df$extreme_time == "T2"
+  if (sum(is_t2, na.rm = TRUE) < 2 || sum(!is_t2, na.rm = TRUE) < 2) return(NULL)
+  wilcox.test(df$elapsed_T2[is_t2], df$elapsed_T2[!is_t2], exact = FALSE)
+}
+
+timing_sensitivity_tbl <- imap_dfr(biomarker_specs, function(spec, name) {
+  df <- timing_join |> filter(biomarker == name, !is.na(elapsed_T2))
+  wt <- run_timing_test(name)
+  if (is.null(wt)) return(NULL)
+  tibble(
+    biomarker             = name,
+    n_T2_peak             = sum(df$extreme_time == "T2"),
+    n_other               = sum(df$extreme_time != "T2"),
+    median_elapsed_if_T2   = round(median(df$elapsed_T2[df$extreme_time == "T2"], na.rm = TRUE), 1),
+    median_elapsed_if_not  = round(median(df$elapsed_T2[df$extreme_time != "T2"], na.rm = TRUE), 1),
+    p.value               = wt$p.value
+  )
+}) |>
+  mutate(p_fdr = round(c(
+    p.adjust(p.value[1:4], method = "fdr"),
+    p.adjust(p.value[5:7], method = "fdr")
+  ), 4))
+
+timing_sensitivity_tbl |>
+  mutate(p.value = round(p.value, 4)) |>
+  mutate(p_fdr = cell_spec(p_fdr, bold = p_fdr < 0.05,
+    color = if_else(p_fdr < 0.05, "#2166ac", "black"))) |>
+  kable(escape = FALSE,
+        col.names = c("biomarker", "n peaked at T2", "n peaked at T3/T4",
+                       "Median T1→T2 gap (min), T2-peakers", "Median T1→T2 gap (min), others",
+                       "p (raw)", "p (FDR)"),
+        caption = "Does the T1→T2 sampling gap predict whether T2 is the peak/trough timepoint?") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+```{r timing-peak-results-vals, echo=FALSE, include=FALSE}
+n_timing_sig <- sum(timing_sensitivity_tbl$p_fdr < 0.05)
+timing_sig_text <- if (n_timing_sig == 0) "none" else
+  timing_sensitivity_tbl |> filter(p_fdr < 0.05) |> pull(biomarker) |> paste(collapse = ", ")
+```
+
+**Results.** The median T1→T2 gap was nearly identical for participants who peaked at T2
+versus those who peaked at T3/T4, for every biomarker — and `r n_timing_sig` of 7 biomarkers
+showed a significant difference after FDR correction (`r timing_sig_text`). In other words,
+**how late the T2 sample happened to be drawn did not predict whether it captured the
+peak/trough.** This is a reassuring null result: the dominance of T2 as the modal peak
+timepoint for the cytokines does not appear to be a scheduling artifact.
+
+## Peak/Trough Location by Actual Collection Time
+
+Each point below is one participant's actual T2, T3, or T4 collection time; points are
+colored by whether that timepoint was *that participant's own* peak (immune) or trough
+(hormones). If timing drove peak location, red points would cluster at one end of each row;
+instead they're spread throughout — consistent with the null result above.
+
+```{r timing-peak-plot, fig.width=12, fig.height=6}
+peak_timing_plot_data <- timing_join |>
+  select(SampleID, biomarker, extreme_time, included, elapsed_T2, elapsed_T3, elapsed_T4) |>
+  pivot_longer(c(elapsed_T2, elapsed_T3, elapsed_T4), names_to = "nominal_time", values_to = "elapsed_min") |>
+  mutate(
+    nominal_time = str_remove(nominal_time, "elapsed_"),
+    is_peak      = included & (extreme_time == nominal_time)
+  ) |>
+  filter(!is.na(elapsed_min))
+
+ggplot(peak_timing_plot_data, aes(x = elapsed_min, y = nominal_time, color = is_peak)) +
+  geom_jitter(height = 0.15, width = 0, alpha = 0.6, size = 1.4) +
+  scale_color_manual(values = c(`TRUE` = "#d73027", `FALSE` = "gray70"),
+                      labels = c(`TRUE` = "Own peak/trough", `FALSE` = "Not peak/trough"), name = NULL) +
+  facet_wrap(~biomarker, ncol = 4) +
+  labs(x = "Minutes since T1 (actual, measured)", y = "Nominal timepoint") +
+  theme_minimal() +
+  theme(legend.position = "top", strip.text = element_text(face = "bold"))
+```
+
+---
+
+# Biomarker Trajectories Anchored to Actual Session Timing
+
+The plots above anchor sample timing to each participant's own T1 saliva sample. This section
+instead anchors everyone's biomarker trajectory to their *actual, measured* scan and SOS-task
+start times (`data/sos-session-timing.csv`), so trajectories can be viewed directly in the
+context of when the scan and social-stressor task actually happened — rather than relative to
+an arbitrary T1 draw time or the nominal study protocol.
+
+```{r session-timing-load, echo=FALSE}
+sos_session_timing_raw <- read.csv(file.path(proj_path, "data", "sos-session-timing.csv"))
+
+# Anchor = each participant's own actual scan start; falls back to their own SOS
+# task start for the handful of participants missing a recorded scan start time.
+session_timing <- sos_session_timing_raw |>
+  mutate(SampleID = sub("_", "", subject_spit_id)) |>
+  mutate(
+    scan_start_min      = parse_hhmm(sos_scan_actual_start),
+    sos_start_min       = parse_hhmm(sos_actual_start),
+    session_end_min_raw = parse_hhmm(sos_end_time),
+    anchor_min          = if_else(!is.na(scan_start_min), scan_start_min, sos_start_min),
+    anchor_source       = case_when(
+      !is.na(scan_start_min) ~ "scan_start",
+      !is.na(sos_start_min)  ~ "sos_start",
+      TRUE                   ~ NA_character_
+    ),
+    # A handful of sos_end_time values were entered without the PM offset
+    # (e.g., "05:51" instead of "17:51"), making the session appear to end
+    # before the scan/task even started. A real session can't end before it
+    # begins, so treat any end time earlier than this participant's own
+    # anchor as a missing +12h offset and correct it.
+    end_time_corrected = !is.na(session_end_min_raw) & !is.na(anchor_min) &
+      session_end_min_raw < anchor_min,
+    session_end_min = if_else(end_time_corrected, session_end_min_raw + 12 * 60, session_end_min_raw)
+  ) |>
+  select(SampleID, scan_start_min, sos_start_min, session_end_min, anchor_min, anchor_source,
+         end_time_corrected)
+
+timing_anchor <- saliva_timing |>
+  left_join(session_timing, by = "SampleID") |>
+  mutate(
+    T1_i = t1i_min - anchor_min, T2_i = t2i_min - anchor_min,
+    T3_i = t3i_min - anchor_min, T4_i = t4i_min - anchor_min,
+    T1_h = t1h_min - anchor_min, T2_h = t2h_min - anchor_min,
+    T3_h = t3h_min - anchor_min, T4_h = t4h_min - anchor_min,
+    scan_rel = scan_start_min  - anchor_min,
+    sos_rel  = sos_start_min   - anchor_min,
+    end_rel  = session_end_min - anchor_min
+  )
+```
+
+```{r session-timing-n, echo=FALSE}
+n_anchored <- sum(!is.na(session_timing$anchor_min))
+n_fallback <- sum(session_timing$anchor_source == "sos_start", na.rm = TRUE)
+n_no_anchor <- sum(is.na(session_timing$anchor_source))
+n_end_corrected <- sum(session_timing$end_time_corrected, na.rm = TRUE)
+cat("N with a usable session anchor:", n_anchored, "of", nrow(session_timing),
+    "(", n_fallback, "anchored to SOS task start instead of scan start, due to a missing scan start time;",
+    n_no_anchor, "excluded entirely for missing both)\n")
+cat("N with a corrected (+12h) session end time:", n_end_corrected,
+    "— these had an end time earlier than their own scan/task start, indicating a likely AM/PM data-entry error\n")
+```
+
+```{r anchor-traj-data, echo=FALSE}
+build_anchor_traj <- function(panel_data, value_col, tube, biomarker_name) {
+  time_cols <- if (tube == "i") c("T1_i", "T2_i", "T3_i", "T4_i") else c("T1_h", "T2_h", "T3_h", "T4_h")
+  timing_long <- timing_anchor |>
+    select(SampleID, all_of(time_cols)) |>
+    setNames(c("SampleID", "1", "2", "3", "4")) |>
+    pivot_longer(-SampleID, names_to = "Time", values_to = "elapsed_min") |>
+    mutate(Time = as.integer(Time))
+
+  panel_data |>
+    select(SampleID, Time, value = all_of(value_col)) |>
+    filter(!is.na(value)) |>
+    left_join(timing_long, by = c("SampleID", "Time")) |>
+    filter(!is.na(elapsed_min)) |>
+    mutate(biomarker = biomarker_name)
+}
+
+anchor_traj_data <- bind_rows(
+  build_anchor_traj(sos_crp_panel,       "CRP_log",          "i", "CRP"),
+  build_anchor_traj(sos_cytokines_panel, "IL10_log",         "i", "IL-10"),
+  build_anchor_traj(sos_cytokines_panel, "IL6_log",          "i", "IL-6"),
+  build_anchor_traj(sos_cytokines_panel, "TNFalpha_log",     "i", "TNF-alpha"),
+  build_anchor_traj(sos_hormones_panel,  "DHEA_log",         "h", "DHEA"),
+  build_anchor_traj(sos_hormones_panel,  "Testosterone_log", "h", "Testosterone"),
+  build_anchor_traj(sos_hormones_panel,  "Cortisol_log",     "h", "Cortisol")
+) |>
+  mutate(biomarker = factor(biomarker, levels = c(
+    "CRP", "IL-10", "IL-6", "TNF-alpha", "DHEA", "Testosterone", "Cortisol"
+  )))
+
+event_lines <- tibble(
+  event = factor(
+    c("Scan start", "SOS task start", "Session end"),
+    levels = c("Scan start", "SOS task start", "Session end")
+  ),
+  x = c(
+    mean(timing_anchor$scan_rel, na.rm = TRUE),
+    mean(timing_anchor$sos_rel,  na.rm = TRUE),
+    mean(timing_anchor$end_rel,  na.rm = TRUE)
+  )
+)
+```
+
+Dashed vertical lines mark the **mean** (across participants) time of each session milestone,
+relative to each participant's own anchor (0 = their own scan start, or SOS task start for the
+few participants missing a scan start time). Thin gray lines are individual participants'
+observed trajectories; the black line is a loess smooth across everyone, plotted against real
+elapsed time rather than the ordinal T1–T4 sequence.
+
+```{r anchor-traj-plot, fig.width=13, fig.height=7}
+ggplot(anchor_traj_data, aes(x = elapsed_min, y = value)) +
+  geom_vline(data = event_lines, aes(xintercept = x, color = event),
+             linetype = "dashed", linewidth = 0.6) +
+  geom_line(aes(group = SampleID), color = "gray70", alpha = 0.35, linewidth = 0.3) +
+  geom_point(color = "gray70", alpha = 0.35, size = 0.7) +
+  geom_smooth(method = "loess", formula = y ~ x, color = "black", fill = "gray40",
+              alpha = 0.2, linewidth = 1) +
+  scale_color_brewer(palette = "Dark2", name = "Session milestone (mean time)") +
+  facet_wrap(~biomarker, scales = "free_y", ncol = 4) +
+  labs(x = "Minutes since scan start (actual, anchored per participant)",
+       y = "Concentration (log-transformed)") +
+  theme_minimal() +
+  theme(legend.position = "bottom", strip.text = element_text(face = "bold"))
+```
+
+**Note.** T1 saliva samples were typically collected *before* the scan (negative values on the
+x-axis) as a pre-scan baseline. The loess bands flare out at the far left/right edges of each
+panel where data are sparse (few participants contribute samples that far from the mean
+timing) — treat the smooth as most reliable in the denser middle region, roughly spanning scan
+start through the SOS task start.

@@ -92,6 +92,20 @@ tibble(
   kable_styling(bootstrap_options = "hover", full_width = FALSE)
 ```
 
+```{r cesdc-omega}
+cesdc_omega <- omega(cesdc_mat, nfactors = 1, plot = FALSE)
+tibble(
+  Statistic = c("ω (total)", "ω (hierarchical)", "α"),
+  Value = c(
+    round(cesdc_omega$omega.tot, 3),
+    round(cesdc_omega$omega_h,   3),
+    round(cesdc_omega$alpha,     3)
+  )
+) |>
+  kable(caption = "CES-DC omega reliability") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
 ## Item-total correlations
 
 ```{r cesdc-item-total}
@@ -125,41 +139,56 @@ cat("N above cutoff (≥ 15):",
 
 ## Pubertal Development Scale (PDS)
 
-**Petersen et al. (1988), female version.** Items F1–F5 rated 1–4 (1 = no development,
-4 = development seems complete). Item F6 = menarche (0 = no, 1 = yes). Items F7–F10
-capture menarche timing (free-text / age fields) and are excluded from the scale score.
+**Petersen et al. (1988), female version.** Four somatic development items (F1 growth spurt,
+F2 body hair, F3 skin changes, F4 breast development) rated 1–4 (1 = no development,
+4 = development seems complete). Item F6 = menarche (0 = no → scored 1; 1 = yes → scored 4)
+and is included in the mean score. **Item F5 (perceived timing relative to peers) is excluded
+from the developmental mean** and treated separately as a timing operationalisation (see below).
+Items F7–F10 capture menarche date (free-text) and are excluded.
 
-PDS total score = mean of F1–F5; menarche status reported separately.
+PDS developmental mean = mean of F1, F2, F3, F4, F6_recoded (range 1–4).
 
 ```{r pds-score}
 pds_items <- quest_raw |>
-  select(SampleID, PDS_F1, PDS_F2, PDS_F3, PDS_F4, PDS_F5, PDS_F6)
+  select(SampleID, PDS_F1, PDS_F2, PDS_F3, PDS_F4, PDS_F5, PDS_F6) |>
+  mutate(PDS_F6_coded = if_else(PDS_F6 == 1, 4L, 1L))  # yes=4, no=1
 
-pds_mat <- pds_items |> select(PDS_F1:PDS_F5) |> as.matrix()
+# Developmental scale: F1, F2, F3, F4, F6_coded (excludes F5 perceived timing)
+pds_mat <- pds_items |>
+  select(PDS_F1, PDS_F2, PDS_F3, PDS_F4, PDS_F6_coded) |>
+  as.matrix()
 
 pds_scores <- pds_items |>
-  mutate(
-    PDS_mean     = rowMeans(pds_mat, na.rm = FALSE),
-    PDS_menarche = PDS_F6
-  ) |>
-  select(SampleID, PDS_mean, PDS_menarche)
+  mutate(PDS_mean = rowMeans(pds_mat, na.rm = FALSE)) |>
+  select(SampleID, PDS_mean, PDS_F5)   # retain F5 for timing analyses
 ```
 
-### Item descriptives (F1–F5)
+### Item descriptives (F1–F4 + recoded F6)
 
 ```{r pds-item-desc}
 describe(pds_mat) |>
   as.data.frame() |>
   select(n, mean, sd, min, max, skew, kurtosis) |>
   mutate(across(where(is.numeric), \(x) round(x, 2))) |>
-  kable(caption = "PDS items F1–F5 descriptives (1 = no development, 4 = complete)") |>
+  kable(caption = "PDS developmental items: F1–F4 + F6 recoded (1 = no development / no menarche, 4 = complete / menarche)") |>
   kable_styling(bootstrap_options = "hover", full_width = FALSE)
 
 cat("Menarche: yes =", sum(pds_items$PDS_F6 == 1, na.rm = TRUE),
     ", no =", sum(pds_items$PDS_F6 == 0, na.rm = TRUE), "\n")
 ```
 
-### Internal consistency (F1–F5)
+### PDS_F5: Perceived timing
+
+```{r pds-f5-desc}
+describe(pds_items$PDS_F5) |>
+  as.data.frame() |>
+  select(n, mean, sd, min, max, skew, kurtosis) |>
+  mutate(across(where(is.numeric), \(x) round(x, 2))) |>
+  kable(caption = "PDS F5: perceived timing relative to peers (1 = much earlier, 4 = much later)") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+### Internal consistency (F1–F4 + recoded F6)
 
 ```{r pds-alpha}
 pds_alpha <- alpha(pds_mat, check.keys = TRUE)
@@ -178,11 +207,25 @@ tibble(
     round(pds_alpha$total$average_r,   3)
   )
 ) |>
-  kable(caption = "PDS internal consistency (items F1–F5)") |>
+  kable(caption = "PDS internal consistency (F1–F4 + recoded F6)") |>
   kable_styling(bootstrap_options = "hover", full_width = FALSE)
 ```
 
-### Item-total correlations (F1–F5)
+```{r pds-omega}
+pds_omega <- omega(pds_mat, nfactors = 1, plot = FALSE)
+tibble(
+  Statistic = c("ω (total)", "ω (hierarchical)", "α"),
+  Value = c(
+    round(pds_omega$omega.tot, 3),
+    round(pds_omega$omega_h,   3),
+    round(pds_omega$alpha,     3)
+  )
+) |>
+  kable(caption = "PDS omega reliability (F1–F4 + recoded F6)") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+### Item-total correlations (F1–F4 + recoded F6)
 
 ```{r pds-item-total}
 pds_alpha$item.stats |>
@@ -201,7 +244,7 @@ describe(pds_scores$PDS_mean) |>
   as.data.frame() |>
   select(n, mean, sd, min, max, skew, kurtosis) |>
   mutate(across(where(is.numeric), \(x) round(x, 2))) |>
-  kable(caption = "PDS mean score (F1–F5; range 1–4)") |>
+  kable(caption = "PDS developmental mean (F1–F4 + recoded F6; range 1–4)") |>
   kable_styling(bootstrap_options = "hover", full_width = FALSE)
 ```
 
@@ -209,12 +252,13 @@ describe(pds_scores$PDS_mean) |>
 
 ## Pubertal Body Image (PBIP)
 
-**Pubertal Body Image Perception** (PBIP; Koff & Rierdan, 1995). 4 items (1A, 1B, 2A, 2B),
-rated 2–5. Higher scores indicate more advanced perceived pubertal development.
+**Pubertal Body Image Perception** (PBIP; Koff & Rierdan, 1995). 2 items used (1A, 2A —
+items assessing perceived breast and pubic hair development), rated 2–5. Items 1B and 2B
+(body size / shape) are excluded. Higher scores indicate more advanced perceived pubertal development.
 
 ```{r pbip-score}
 pbip_items <- quest_raw |>
-  select(SampleID, PBIP_1A, PBIP_1B, PBIP_2A, PBIP_2B)
+  select(SampleID, PBIP_1A, PBIP_2A)
 
 pbip_mat <- pbip_items |> select(-SampleID) |> as.matrix()
 
@@ -230,7 +274,7 @@ describe(pbip_mat) |>
   as.data.frame() |>
   select(n, mean, sd, min, max, skew, kurtosis) |>
   mutate(across(where(is.numeric), \(x) round(x, 2))) |>
-  kable(caption = "PBIP item descriptives (2–5)") |>
+  kable(caption = "PBIP item descriptives — 1A and 2A only (2–5)") |>
   kable_styling(bootstrap_options = "hover", full_width = FALSE)
 ```
 
@@ -253,8 +297,15 @@ tibble(
     round(pbip_alpha$total$average_r,   3)
   )
 ) |>
-  kable(caption = "PBIP internal consistency") |>
+  kable(caption = "PBIP internal consistency (items 1A and 2A)") |>
   kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+```{r pbip-omega}
+# omega requires ≥ 3 items; report inter-item r only for 2-item scale
+cat("Note: omega requires ≥ 3 items. For this 2-item scale, inter-item r =",
+    round(cor(pbip_mat[complete.cases(pbip_mat), ])[1, 2], 3),
+    "is the appropriate reliability index.\n")
 ```
 
 ### Item-total correlations
@@ -276,7 +327,7 @@ describe(pbip_scores$PBIP_mean) |>
   as.data.frame() |>
   select(n, mean, sd, min, max, skew, kurtosis) |>
   mutate(across(where(is.numeric), \(x) round(x, 2))) |>
-  kable(caption = "PBIP mean score (range 2–5)") |>
+  kable(caption = "PBIP mean score — items 1A and 2A (range 2–5)") |>
   kable_styling(bootstrap_options = "hover", full_width = FALSE)
 ```
 
@@ -285,17 +336,19 @@ describe(pbip_scores$PBIP_mean) |>
 # BFNES
 
 **Brief Fear of Negative Evaluation Scale** (Leary, 1983). 12 items, 1–5 scale.
-Items 2, 6, 7, 10 are reverse-scored (6 – item). Sum total range 12–60;
-higher scores indicate greater fear of negative evaluation.
+Items 2, 4, and 7 are reverse-scored (6 – item). Item 10 is stored in the forward
+direction in the raw data (item-total *r* = +.60 without reversal) and is not
+reverse-scored. Sum total range 12–60; higher scores indicate greater fear of
+negative evaluation.
 
 ```{r bfnes-score}
 bfnes_items <- quest_raw |>
   select(SampleID, starts_with("BFNES_")) |>
   mutate(
-    BFNES_2  = 6 - BFNES_2,
-    BFNES_6  = 6 - BFNES_6,
-    BFNES_7  = 6 - BFNES_7,
-    BFNES_10 = 6 - BFNES_10
+    BFNES_2 = 6 - BFNES_2,
+    BFNES_4 = 6 - BFNES_4,
+    BFNES_7 = 6 - BFNES_7
+    # BFNES_10 forward-scored in raw data; reversal confirmed incorrect empirically
   )
 
 bfnes_mat <- bfnes_items |> select(-SampleID) |> as.matrix()
@@ -337,6 +390,20 @@ tibble(
   )
 ) |>
   kable(caption = "BFNES internal consistency") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+```{r bfnes-omega}
+bfnes_omega <- omega(bfnes_mat, nfactors = 1, plot = FALSE)
+tibble(
+  Statistic = c("ω (total)", "ω (hierarchical)", "α"),
+  Value = c(
+    round(bfnes_omega$omega.tot, 3),
+    round(bfnes_omega$omega_h,   3),
+    round(bfnes_omega$alpha,     3)
+  )
+) |>
+  kable(caption = "BFNES omega reliability") |>
   kable_styling(bootstrap_options = "hover", full_width = FALSE)
 ```
 

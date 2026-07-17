@@ -1,0 +1,685 @@
+---
+title: "SOS Bioreactivity — Experimental Analyses"
+date: today
+format:
+  html:
+    toc: true
+    toc-float: true
+    toc-depth: 3
+    code-fold: true
+    code-summary: "Show code"
+    theme: journal
+    embed-resources: true
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup, echo=FALSE}
+# quarto render sos-experimental-analyses.qmd
+
+# This file holds exploratory analyses (HPA-inflammatory reactivity profiles
+# and the DHEA:cortisol ratio) split out of sos-bioreactivity-analyses.qmd.
+# It is self-contained: the chunks below rebuild the data objects those
+# analyses depend on (all_difference, bio_all_difference, sos_puberty, dep,
+# bfnes, sos_hormones_wide) by duplicating the relevant data-prep steps from
+# the main analysis file. Keep the two in sync if upstream cleaning changes.
+
+pacman::p_load(
+  "dplyr",
+  "ggplot2",
+  "tidyr",
+  "stringr",
+  "purrr",
+  "here",
+  "broom",
+  "readxl",
+  "ggpubr",
+  "ggsignif",
+  "Hmisc",
+  "knitr",
+  "kableExtra",
+  "ggdist",
+  "tidyLPA",
+  "mclust",
+  "nnet"
+)
+
+proj_path <- here()
+data_path <- Sys.getenv("CAS_DIR")
+options(knitr.table.format = "html", scipen = 999)
+
+# mclust masks purrr::map — restore purrr versions explicitly
+map <- purrr::map
+map_dbl <- purrr::map_dbl
+map_dfr <- purrr::map_dfr
+map2_dfr <- purrr::map2_dfr
+iwalk <- purrr::iwalk
+imap <- purrr::imap
+imap_dfr <- purrr::imap_dfr
+```
+
+```{r load-data, echo=FALSE}
+sos_cytokines <- read.csv(file.path(
+  data_path,
+  "TAG/data/SOS/saliva/Cleaned_datasets/SOS_cytokines_cleaned.csv"
+))
+sos_crp <- read.csv(file.path(
+  data_path,
+  "TAG/data/SOS/saliva/Cleaned_datasets/SOS_CRP_cleaned.csv"
+))
+sos_hormones <- read.csv(file.path(
+  data_path,
+  "TAG/data/SOS/saliva/Cleaned_datasets/SOS_hormones_cleaned.csv"
+)) |>
+  select(-starts_with("Estradiol"))
+
+hr_resting1_raw <- read.csv(file.path(
+  data_path,
+  "TAG/data/SOS/physio/Mean_HR_Resting1.csv"
+))
+hr_resting2_raw <- read.csv(file.path(
+  data_path,
+  "TAG/data/SOS/physio/Mean_HR_Resting2.csv"
+))
+hr_task_raw <- read.csv(file.path(
+  data_path,
+  "TAG/data/SOS/physio/Mean_HR_Task.csv"
+))
+hr_conditions_raw <- read_excel(file.path(
+  data_path,
+  "TAG/data/SOS/physio/Heart_Rate_Data_Task_Sequence_All_Slices_Conditions.xlsx"
+))
+sos_subj_stress <- read.csv(file.path(
+  data_path,
+  "SOS/SOS-study-monash/questionnaires/sos_subjective_stress_ratings.csv"
+))
+
+dep <- read.csv(file.path(
+  data_path,
+  "SOS/SOS-study-monash/questionnaires/CESD_total.csv"
+)) |>
+  select(SampleID, CESD_total)
+
+quest_raw_q <- read.csv(file.path(proj_path, "data", "SOS_questionnaire_data.csv"))
+bfnes <- quest_raw_q |>
+  select(SampleID = SID, starts_with("BFNES_")) |>
+  mutate(across(starts_with("BFNES_"), \(x) suppressWarnings(as.numeric(x)))) |>
+  mutate(
+    BFNES_2     = 6 - BFNES_2,   # reverse-scored items: 2, 4, 7
+    BFNES_4     = 6 - BFNES_4,   # BFNES_10 forward-scored in raw data (not reversed)
+    BFNES_7     = 6 - BFNES_7,
+    BFNES_total = rowSums(across(starts_with("BFNES_")), na.rm = FALSE)
+  ) |>
+  select(SampleID, BFNES_total)
+```
+
+```{r hr-processing, echo=FALSE}
+hr_exclude <- c(
+  "TAG313p2_20191117_151413",   # duplicate session
+  "TAG077_20190823_145422",     # artifact: impossibly low task HR
+  "TAG188_20190731_145115"      # artifact: impossibly low task HR
+)
+
+hr_resting1 <- hr_resting1_raw |> rename(id = 1) |> filter(!id %in% hr_exclude) |> mutate(sequence = "Resting 1")
+hr_resting2 <- hr_resting2_raw |> rename(id = 1) |> filter(!id %in% hr_exclude) |> mutate(sequence = "Resting 2")
+hr_task      <- hr_task_raw    |> rename(id = 1) |> filter(!id %in% hr_exclude) |> mutate(sequence = "Task")
+
+hr_all_wide <- bind_rows(hr_resting1, hr_resting2, hr_task) |>
+  pivot_wider(names_from = sequence, values_from = Mean_HR) |>
+  mutate(resting_avg = if_else(is.na(`Resting 2`), `Resting 1`, (`Resting 1` + `Resting 2`) / 2))
+
+hr_conditions_avg <- hr_conditions_raw |>
+  pivot_longer(SOS068_20190303_150846:TAG223_20191116_145342, names_to = "id", values_to = "hr") |>
+  rename(task_condition = Task_condition) |>
+  group_by(id, task_condition) |>
+  summarise(mean_hr = mean(hr, na.rm = TRUE), .groups = "drop") |>
+  filter(!is.na(task_condition), task_condition != "NA") |>
+  mutate(task_condition = factor(task_condition,
+    levels = c("1", "2", "3", "R"),
+    labels = c("Other", "Self-Disconnected", "Self-Connected", "Rest")
+  )) |>
+  filter(!id %in% hr_exclude)
+```
+
+```{r hr-difference, echo=FALSE}
+hr_final_wide <- hr_all_wide |>
+  full_join(
+    hr_conditions_avg |> pivot_wider(names_from = task_condition, values_from = mean_hr),
+    by = "id"
+  ) |>
+  mutate(
+    SampleID = case_when(
+      str_sub(id, 1, 6) == "SOS068" ~ "TAG068",
+      str_sub(id, 1, 6) == "SOS076" ~ "TAG076",
+      .default = str_sub(id, 1, 6)
+    ),
+    task_rs_hr_diff    = Task - resting_avg,
+    conn_dis_hr_diff   = `Self-Connected` - `Self-Disconnected`,
+    conn_other_hr_diff = `Self-Connected` - Other,
+    conn_rest_hr_diff  = `Self-Connected` - Rest
+  )
+
+hr_difference <- hr_final_wide |>
+  select(SampleID, task_rs_hr_diff, conn_dis_hr_diff, conn_other_hr_diff, conn_rest_hr_diff)
+```
+
+```{r biomarker-processing, echo=FALSE}
+sos_crp_panel       <- sos_crp       |> select(SampleID, Time, CRP_log)
+sos_cytokines_panel <- sos_cytokines |> select(SampleID, Time, IL10_log, IL6_log, TNFalpha_log)
+sos_hormones_panel  <- sos_hormones  |> select(SampleID, Time, DHEA_log, Testosterone_log, Cortisol_log)
+```
+
+```{r peaks-processing, echo=FALSE}
+sos_crp_wide <- sos_crp_panel |>
+  pivot_wider(
+    names_from = Time,
+    values_from = CRP_log,
+    names_glue = "CRP_log_{Time}",
+    values_fn = mean
+  ) |>
+  mutate(crp_peak = if_else(CRP_log_3 > CRP_log_4, CRP_log_3, CRP_log_4))
+
+sos_cytokines_wide <- sos_cytokines_panel |>
+  pivot_wider(
+    names_from = Time,
+    values_from = c(IL10_log, IL6_log, TNFalpha_log),
+    values_fn = mean
+  ) |>
+  mutate(
+    il10_peak = if_else(IL10_log_3 > IL10_log_4, IL10_log_3, IL10_log_4),
+    il6_peak = if_else(IL6_log_3 > IL6_log_4, IL6_log_3, IL6_log_4),
+    tnfa_peak = if_else(
+      TNFalpha_log_3 > TNFalpha_log_4,
+      TNFalpha_log_3,
+      TNFalpha_log_4
+    )
+  )
+
+sos_hormones_wide <- sos_hormones_panel |>
+  pivot_wider(
+    names_from = Time,
+    values_from = c(DHEA_log, Testosterone_log, Cortisol_log),
+    values_fn = mean
+  ) |>
+  mutate(
+    dhea_peak = if_else(DHEA_log_3 > DHEA_log_4, DHEA_log_3, DHEA_log_4),
+    test_peak = if_else(
+      Testosterone_log_3 > Testosterone_log_4,
+      Testosterone_log_3,
+      Testosterone_log_4
+    ),
+    cort_peak = if_else(
+      Cortisol_log_3 > Cortisol_log_4,
+      Cortisol_log_3,
+      Cortisol_log_4
+    )
+  )
+
+crp_difference <- sos_crp_wide |>
+  mutate(crp_difference = crp_peak - CRP_log_1) |>
+  select(SampleID, crp_difference)
+
+cytokines_difference <- sos_cytokines_wide |>
+  mutate(
+    il10_difference = il10_peak - IL10_log_1,
+    il6_difference = il6_peak - IL6_log_1,
+    tnfa_difference = tnfa_peak - TNFalpha_log_1
+  ) |>
+  select(SampleID, il10_difference, il6_difference, tnfa_difference)
+
+hormones_difference <- sos_hormones_wide |>
+  mutate(
+    dhea_difference = dhea_peak - DHEA_log_1,
+    test_difference = test_peak - Testosterone_log_1,
+    cort_difference = cort_peak - Cortisol_log_1
+  ) |>
+  select(SampleID, dhea_difference, test_difference, cort_difference)
+
+biomarkers_difference <- crp_difference |>
+  full_join(cytokines_difference, by = "SampleID") |>
+  full_join(hormones_difference, by = "SampleID")
+
+bio_all_difference <- hr_difference |>
+  full_join(biomarkers_difference, by = "SampleID")
+
+subjective_difference <- sos_subj_stress |>
+  mutate(
+    subj_scsd_difference = selfconnected_subj_stress -
+      selfdisconnected_subj_stress,
+    subj_scother_difference = selfconnected_subj_stress - other_subj_stress
+  ) |>
+  select(SampleID, subj_scsd_difference, subj_scother_difference)
+
+all_difference <- bio_all_difference |>
+  full_join(subjective_difference, by = "SampleID")
+```
+
+```{r puberty-load, echo=FALSE}
+# Age at session (for computing pubertal timing residuals)
+dob_session_raw <- read.csv(file.path(
+  data_path, "SOS/SOS-study-monash/questionnaires/SOS_DOB_sessiondate.csv"
+)) |>
+  mutate(SampleID = sub("_", "", subject_spit_id))
+
+age_df <- dob_session_raw |>
+  filter(redcap_event_name == "ongoing_records_arm_1") |>
+  select(SampleID, dob) |>
+  mutate(dob = as.Date(dob)) |>
+  inner_join(
+    dob_session_raw |>
+      filter(redcap_event_name == "sos_arm_1") |>
+      select(SampleID, sos_session_date) |>
+      mutate(sos_session_date = as.Date(sos_session_date)),
+    by = "SampleID"
+  ) |>
+  mutate(age_at_session = as.numeric(sos_session_date - dob) / 365.25) |>
+  select(SampleID, age_at_session)
+
+# PDS mean score: F1–F5 + F6 recoded (0=no→1, 1=yes→4), then mean of all 6
+pds_full_raw <- read.csv(file.path(
+  data_path, "SOS/SOS-study-monash/questionnaires/CESD_PDS.csv"
+))
+
+# PDS developmental mean: F1 (growth spurt), F2 (body hair), F3 (skin),
+# F4 (breast), F6 recoded (menarche: no=1, yes=4). F5 (perceived timing) excluded.
+pds_mean_df <- pds_full_raw |>
+  select(SampleID, PDS_F1, PDS_F2, PDS_F3, PDS_F4, PDS_F5, PDS_F6) |>
+  mutate(across(PDS_F1:PDS_F6, \(x) suppressWarnings(as.numeric(x))),
+         PDS_F6_coded = if_else(PDS_F6 == 1, 4, 1)) |>
+  rowwise() |>
+  mutate(PDS_mean = mean(c(PDS_F1, PDS_F2, PDS_F3, PDS_F4, PDS_F6_coded),
+                         na.rm = FALSE)) |>
+  ungroup() |>
+  select(SampleID, PDS_mean, PDS_F5)   # retain F5 as a timing variable
+
+# sos_puberty carries the single pubertal status variable (PDS_mean)
+sos_puberty <- pds_mean_df |>
+  select(SampleID, PDS_mean)
+```
+
+```{r puberty-processing, echo=FALSE}
+# puberty_vars = PDS_mean (all non-ID columns from sos_puberty); puberty_labels
+# gives the display name for each, keyed by variable name
+puberty_vars     <- sos_puberty |> select(-SampleID) |> names()
+puberty_label_map <- c(PDS_mean = "Pubertal Status (PDS Mean)")
+puberty_labels    <- unname(puberty_label_map[puberty_vars])
+```
+
+---
+
+# HPA-Inflammatory Reactivity Profiles
+
+Motivated by prior work showing that cortisol reactivity patterns are better interpreted in the context of joint HPA-inflammatory responsivity, we used latent profile analysis (LPA) to identify subgroups of adolescents based on their cortisol and cytokine reactivity scores. We then examined whether profiles differed in pubertal development, heart rate reactivity, and subjective stress.
+
+```{r lpa-data-prep, echo=FALSE}
+lpa_input <- bio_all_difference |>
+  select(SampleID, cort_difference, crp_difference, il6_difference, tnfa_difference, il10_difference) |>
+  na.omit()
+```
+
+## 1. Latent Profile Analysis
+
+```{r lpa-fit}
+lpa_models <- lpa_input |>
+  select(-SampleID) |>
+  scale() |>
+  as.data.frame() |>
+  estimate_profiles(1:5, package = "mclust")
+
+compare_solutions(lpa_models)
+```
+
+```{r lpa-select, echo=FALSE}
+# Inspect BIC/entropy table above and set n_profiles to your chosen solution
+n_profiles <- 2
+
+lpa_final <- lpa_input |>
+  select(-SampleID) |>
+  scale() |>
+  as.data.frame() |>
+  estimate_profiles(n_profiles, package = "mclust")
+
+lpa_assignments <- lpa_input |>
+  select(SampleID) |>
+  bind_cols(get_data(lpa_final) |> select(Class))  |>
+  rename(profile = Class) |>
+  mutate(profile = factor(profile, labels = paste("Profile", 1:n_profiles)))
+```
+
+## 2. Profile Trajectories
+
+Mean reactivity scores by profile, showing the joint cortisol–cytokine pattern for each group.
+
+```{r lpa-profile-plot, fig.width=9, fig.height=5}
+profile_means <- lpa_assignments |>
+  left_join(lpa_input, by = "SampleID") |>
+  pivot_longer(
+    c(cort_difference, crp_difference, il6_difference, tnfa_difference, il10_difference),
+    names_to  = "biomarker",
+    values_to = "reactivity"
+  ) |>
+  mutate(biomarker = case_match(
+    biomarker,
+    "cort_difference" ~ "Cortisol",
+    "crp_difference"  ~ "CRP",
+    "il6_difference"  ~ "IL-6",
+    "tnfa_difference" ~ "TNF-α",
+    "il10_difference" ~ "IL-10"
+  )) |>
+  group_by(profile, biomarker) |>
+  summarise(
+    mean_react = mean(reactivity, na.rm = TRUE),
+    se_react   = sd(reactivity,   na.rm = TRUE) / sqrt(n()),
+    .groups    = "drop"
+  )
+
+ggplot(profile_means, aes(x = biomarker, y = mean_react, color = profile, group = profile)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = mean_react - se_react, ymax = mean_react + se_react), width = 0.15) +
+  scale_color_viridis_d() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  labs(y = "Mean reactivity (peak − T1, log-transformed)", x = NULL, color = "Profile") +
+  theme_minimal()
+```
+
+```{r lpa-profile-ns}
+lpa_assignments |>
+  count(profile) |>
+  kable(col.names = c("Profile", "n"), caption = "Profile membership counts") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+```{r lpa-results-vals, echo=FALSE, include=FALSE}
+prof_ns   <- lpa_assignments |> count(profile)
+prof_list <- paste(prof_ns$profile, "(n =", prof_ns$n, ")", collapse = "; ")
+
+# Describe each profile by direction of cortisol and mean immune reactivity
+prof_char <- profile_means |>
+  group_by(profile) |>
+  summarise(
+    cort_dir   = sign(mean_react[biomarker == "Cortisol"]),
+    mean_immune = mean(mean_react[biomarker %in% c("CRP", "IL-6", "TNF-α", "IL-10")]),
+    .groups = "drop"
+  ) |>
+  mutate(
+    cort_label  = case_when(cort_dir > 0 ~ "cortisol-increasing", .default = "cortisol-blunted"),
+    immune_label = case_when(
+      mean_immune > 0.05  ~ "with elevated immune reactivity",
+      mean_immune < -0.05 ~ "with suppressed immune reactivity",
+      .default = "with minimal immune reactivity"
+    ),
+    desc = paste0(profile, ": ", cort_label, " ", immune_label)
+  )
+prof_desc <- paste(prof_char$desc, collapse = "; ")
+```
+
+**Results.** LPA identified `r n_profiles` distinct HPA-inflammatory reactivity profiles: `r prof_list`. Profiles were characterised by different joint patterns of cortisol and cytokine reactivity: `r prof_desc`. Profile trajectories are shown in the plot above; group sizes and puberty associations are reported in the sections below.
+
+## 3. Puberty → Profile Membership
+
+Multinomial logistic regression predicting profile membership from puberty. The lowest-numbered profile is used as the reference group.
+
+```{r lpa-puberty, results='asis'}
+profile_puberty <- lpa_assignments |>
+  left_join(sos_puberty, by = "SampleID") |>
+  mutate(profile = relevel(profile, ref = "Profile 1"))
+
+for (pv in puberty_vars) {
+  cat("\n\n###", puberty_label_map[[pv]], "\n\n")
+  fit <- multinom(
+    as.formula(paste("profile ~", pv)),
+    data  = profile_puberty,
+    trace = FALSE
+  )
+  tbl <- broom::tidy(fit, exponentiate = TRUE) |>
+    mutate(across(where(is.numeric), \(x) round(x, 3)))
+
+  tbl |>
+    mutate(p.value = cell_spec(p.value, bold = p.value < 0.05,
+      color = if_else(p.value < 0.05, "#2166ac", "black"))) |>
+    kable(
+      escape    = FALSE,
+      col.names = c("Profile (vs. Profile 1)", "Predictor", "OR", "SE", "Statistic", "p")
+    ) |>
+    kable_styling(bootstrap_options = "hover", full_width = FALSE) |>
+    print()
+}
+```
+
+## 4. HR Reactivity and Subjective Stress Across Profiles
+
+```{r lpa-hr-subj-data, echo=FALSE}
+profile_hr_subj <- lpa_assignments |>
+  left_join(
+    all_difference |> select(SampleID, task_rs_hr_diff, conn_dis_hr_diff,
+                              conn_other_hr_diff, conn_rest_hr_diff,
+                              subj_scsd_difference, subj_scother_difference),
+    by = "SampleID"
+  ) |>
+  pivot_longer(
+    c(task_rs_hr_diff, conn_dis_hr_diff, conn_other_hr_diff, conn_rest_hr_diff,
+      subj_scsd_difference, subj_scother_difference),
+    names_to  = "measure",
+    values_to = "value"
+  ) |>
+  mutate(measure = case_match(
+    measure,
+    "task_rs_hr_diff"       ~ "ΔHR: Task vs. Rest",
+    "conn_dis_hr_diff"      ~ "ΔHR: SC vs. SD",
+    "conn_other_hr_diff"    ~ "ΔHR: SC vs. Other",
+    "conn_rest_hr_diff"     ~ "ΔHR: SC vs. Rest",
+    "subj_scsd_difference"  ~ "ΔSubj Stress: SC vs. SD",
+    "subj_scother_difference" ~ "ΔSubj Stress: SC vs. Other"
+  ))
+```
+
+```{r lpa-hr-subj-plot, fig.width=11, fig.height=5}
+ggplot(profile_hr_subj, aes(x = profile, y = value, fill = profile)) +
+  stat_halfeye(adjust = 0.5, width = 0.5, .width = 0, justification = -0.2,
+               point_colour = NA, alpha = 0.8) +
+  geom_boxplot(width = 0.12, outlier.shape = NA, color = "gray30", linewidth = 0.5) +
+  geom_point(aes(color = profile), position = position_jitter(seed = 1, width = 0.08),
+             size = 1, alpha = 0.3) +
+  scale_fill_viridis_d() +
+  scale_color_viridis_d(guide = "none") +
+  facet_wrap(~ measure, scales = "free_y", nrow = 2) +
+  labs(x = NULL, y = "Difference score", fill = "Profile") +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+```
+
+```{r lpa-hr-subj-anova, results='asis'}
+hr_subj_vars <- c(
+  "task_rs_hr_diff", "conn_dis_hr_diff", "conn_other_hr_diff", "conn_rest_hr_diff",
+  "subj_scsd_difference", "subj_scother_difference"
+)
+hr_subj_labels <- c(
+  "ΔHR: Task vs. Rest", "ΔHR: SC vs. SD", "ΔHR: SC vs. Other", "ΔHR: SC vs. Rest",
+  "ΔSubj Stress: SC vs. SD", "ΔSubj Stress: SC vs. Other"
+)
+
+profile_wide <- lpa_assignments |>
+  left_join(all_difference, by = "SampleID")
+
+cat("\n\n### ANOVA / Kruskal-Wallis tests\n\n")
+map2_dfr(hr_subj_vars, hr_subj_labels, function(v, lab) {
+  dat <- profile_wide |> select(profile, all_of(v)) |> na.omit()
+  kw  <- kruskal.test(as.formula(paste(v, "~ profile")), data = dat)
+  tibble(
+    Measure   = lab,
+    statistic = round(kw$statistic, 3),
+    df        = kw$parameter,
+    p.value   = round(kw$p.value, 3)
+  )
+}) |>
+  mutate(p.value = cell_spec(p.value, bold = p.value < 0.05,
+    color = if_else(p.value < 0.05, "#2166ac", "black"))) |>
+  kable(escape = FALSE, col.names = c("Measure", "H", "df", "p")) |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE) |>
+  print()
+```
+
+## 5. Depression and Social Anxiety Across Profiles
+
+```{r lpa-dep-bfnes-data, echo=FALSE}
+profile_dep_bfnes <- lpa_assignments |>
+  left_join(dep,   by = "SampleID") |>
+  left_join(bfnes, by = "SampleID") |>
+  pivot_longer(
+    c(CESD_total, BFNES_total),
+    names_to  = "measure",
+    values_to = "value"
+  ) |>
+  mutate(measure = case_match(
+    measure,
+    "CESD_total"  ~ "CES-DC (depression)",
+    "BFNES_total" ~ "BFNES (fear of negative evaluation)"
+  ))
+```
+
+```{r lpa-dep-bfnes-plot, fig.width=9, fig.height=5}
+ggplot(profile_dep_bfnes, aes(x = profile, y = value, fill = profile)) +
+  stat_halfeye(adjust = 0.5, width = 0.5, .width = 0, justification = -0.2,
+               point_colour = NA, alpha = 0.8) +
+  geom_boxplot(width = 0.12, outlier.shape = NA, color = "gray30", linewidth = 0.5) +
+  geom_point(aes(color = profile),
+             position = position_jitter(seed = 1, width = 0.08),
+             size = 1.5, alpha = 0.4) +
+  scale_fill_viridis_d() +
+  scale_color_viridis_d(guide = "none") +
+  facet_wrap(~ measure, scales = "free_y") +
+  labs(x = NULL, y = "Score", fill = "Profile") +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+```
+
+```{r lpa-dep-bfnes-tests}
+profile_dep_bfnes_wide <- lpa_assignments |>
+  left_join(dep,   by = "SampleID") |>
+  left_join(bfnes, by = "SampleID")
+
+dep_bfnes_vars   <- c("CESD_total", "BFNES_total")
+dep_bfnes_labels <- c("CES-DC (depression)", "BFNES (fear of negative evaluation)")
+
+map2_dfr(dep_bfnes_vars, dep_bfnes_labels, function(v, lab) {
+  dat <- profile_dep_bfnes_wide |> select(profile, all_of(v)) |> na.omit()
+  kw  <- kruskal.test(as.formula(paste(v, "~ profile")), data = dat)
+
+  grp_stats <- dat |>
+    group_by(profile) |>
+    summarise(M = round(mean(.data[[v]], na.rm = TRUE), 2),
+              SD = round(sd(.data[[v]], na.rm = TRUE), 2),
+              .groups = "drop") |>
+    mutate(label = paste0(profile, ": M = ", M, ", SD = ", SD)) |>
+    pull(label) |>
+    paste(collapse = "; ")
+
+  tibble(
+    Measure   = lab,
+    Groups    = grp_stats,
+    H         = round(kw$statistic, 3),
+    df        = kw$parameter,
+    p.value   = round(kw$p.value, 3)
+  )
+}) |>
+  mutate(p.value = cell_spec(p.value, bold = p.value < 0.05,
+    color = if_else(p.value < 0.05, "#2166ac", "black"))) |>
+  kable(escape = FALSE, col.names = c("Measure", "Group descriptives", "H", "df", "p"),
+        caption = "Kruskal-Wallis tests: CES-DC and BFNES by LPA profile") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+```{r lpa-dep-bfnes-results-vals, echo=FALSE, include=FALSE}
+dep_bfnes_kw <- map2_dfr(dep_bfnes_vars, dep_bfnes_labels, function(v, lab) {
+  dat <- profile_dep_bfnes_wide |> select(profile, all_of(v)) |> na.omit()
+  kw  <- kruskal.test(as.formula(paste(v, "~ profile")), data = dat)
+  tibble(Measure = lab, H = round(kw$statistic, 3), df = kw$parameter,
+         p = round(kw$p.value, 3), sig = kw$p.value < 0.05)
+})
+
+fmt_kw <- function(row) {
+  paste0("*H*(", row$df, ") = ", row$H, ", *p* = ", row$p)
+}
+```
+
+**Results.** Kruskal-Wallis tests compared CES-DC and BFNES scores across the `r n_profiles` HPA-inflammatory reactivity profiles. `r dep_bfnes_kw$Measure[1]`: `r fmt_kw(dep_bfnes_kw[1,])``r if (dep_bfnes_kw$sig[1]) ", indicating a significant profile difference" else ", indicating no significant profile difference"`. `r dep_bfnes_kw$Measure[2]`: `r fmt_kw(dep_bfnes_kw[2,])``r if (dep_bfnes_kw$sig[2]) ", indicating a significant profile difference" else ", indicating no significant profile difference"`. Group means and distributions are shown in the plot and table above.
+
+## 6. DHEA:Cortisol Ratio and Puberty
+
+The DHEA:cortisol ratio indexes adrenal androgen relative to glucocorticoid output and shifts with pubertal adrenarche. Here we examine whether this ratio correlates with pubertal status and whether it differs across HPA-inflammatory profiles.
+
+```{r dhea-cort-ratio, echo=FALSE}
+dhea_cort <- sos_hormones_wide |>
+  mutate(
+    dhea_cort_ratio_t1   = DHEA_log_1 / abs(Cortisol_log_1),
+    dhea_cort_ratio_peak = dhea_peak  / abs(cort_peak),
+    dhea_cort_ratio_diff = dhea_cort_ratio_peak - dhea_cort_ratio_t1
+  ) |>
+  select(SampleID, dhea_cort_ratio_t1, dhea_cort_ratio_peak, dhea_cort_ratio_diff)
+```
+
+```{r dhea-cort-puberty, fig.width=9, fig.height=4}
+dhea_cort_puberty <- dhea_cort |>
+  left_join(sos_puberty, by = "SampleID")
+
+ratio_plots <- map(puberty_vars, function(pv) {
+  ggplot(dhea_cort_puberty, aes(x = .data[[pv]], y = dhea_cort_ratio_peak)) +
+    geom_point(alpha = 0.5, size = 1.5) +
+    geom_smooth(
+      method = "loess",
+      formula = y ~ x,
+      color = "#29AF7FFF",
+      se = TRUE
+    ) +
+    labs(x = puberty_label_map[[pv]], y = "DHEA:Cortisol ratio (peak)") +
+    theme_minimal()
+})
+
+do.call(ggarrange, c(ratio_plots, list(ncol = length(puberty_vars))))
+```
+
+```{r dhea-cort-corrs}
+dhea_cort_puberty |>
+  select(all_of(c(puberty_vars,
+                  "dhea_cort_ratio_t1", "dhea_cort_ratio_peak", "dhea_cort_ratio_diff"))) |>
+  na.omit() |>
+  as.matrix() |>
+  rcorr() |>
+  (\(r) r$r[puberty_vars,
+             c("dhea_cort_ratio_t1", "dhea_cort_ratio_peak", "dhea_cort_ratio_diff"),
+             drop = FALSE])() |>
+  as.data.frame() |>
+  mutate(across(everything(), \(x) round(x, 3))) |>
+  tibble::rownames_to_column("Puberty variable") |>
+  mutate(`Puberty variable` = recode(`Puberty variable`, !!!puberty_label_map)) |>
+  kable(col.names = c("Puberty variable", "DHEA:Cort T1", "DHEA:Cort Peak", "DHEA:Cort Δ"),
+        caption   = "Correlations between puberty and DHEA:Cortisol ratio") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+```{r dhea-cort-profiles, fig.width=7, fig.height=4}
+lpa_assignments |>
+  left_join(dhea_cort, by = "SampleID") |>
+  pivot_longer(
+    c(dhea_cort_ratio_t1, dhea_cort_ratio_peak, dhea_cort_ratio_diff),
+    names_to  = "timepoint",
+    values_to = "ratio"
+  ) |>
+  mutate(timepoint = case_match(
+    timepoint,
+    "dhea_cort_ratio_t1"   ~ "T1 (baseline)",
+    "dhea_cort_ratio_peak" ~ "Peak",
+    "dhea_cort_ratio_diff" ~ "Δ (peak − T1)"
+  )) |>
+  ggplot(aes(x = profile, y = ratio, fill = profile)) +
+  stat_halfeye(adjust = 0.5, width = 0.5, .width = 0, justification = -0.2,
+               point_colour = NA, alpha = 0.8) +
+  geom_boxplot(width = 0.12, outlier.shape = NA, color = "gray30", linewidth = 0.5) +
+  scale_fill_viridis_d() +
+  facet_wrap(~ timepoint, scales = "free_y") +
+  labs(x = NULL, y = "DHEA:Cortisol ratio", fill = "Profile") +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+```

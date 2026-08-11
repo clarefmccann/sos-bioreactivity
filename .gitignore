@@ -6,3 +6,5 @@ data/
 .*
 *.RData
 *.html
+*.png
+*.csv

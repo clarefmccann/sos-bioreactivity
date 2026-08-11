@@ -28,12 +28,13 @@ pair_replicates <- function(wells_tidy) {
       sd_conc = abs(rep1 - rep2) / sqrt(2),
       cv_computed = 100 * sd_conc / mean_conc,
       # Both replicates censored -> xPONENT reports %CV Replicates as exactly
-      # 0.00 (nothing to compare, not real agreement). Excluding on
-      # any_censored/any_invalidated already keeps these out of cv_computed
-      # for the summary, but the reason is kept distinct for the exclusion
-      # report so "20 of 36 IL-6 CVs were fake zeros" stays legible.
+      # 0.00 (nothing to compare, not real agreement). `any_invalidated` is
+      # kept as an informational column only -- per the decision to trust the
+      # value inside Invalid(x), a manually-invalidated well no longer excludes
+      # a pair on its own; only genuine censoring (below/above limit, N/A, NaN)
+      # does, since result_numeric already resolves to NA for those regardless
+      # of the Invalid() wrapper.
       excluded_reason = dplyr::case_when(
-        any_invalidated ~ "invalidated",
         any_censored ~ "censored_or_na",
         TRUE ~ NA_character_
       )
@@ -41,7 +42,13 @@ pair_replicates <- function(wells_tidy) {
 }
 
 # Recomputing %CV Replicates from Result and asserting agreement with the
-# reported column is a parser correctness check, not a scientific step.
+# reported column is a parser correctness check, not a scientific step. Pairs
+# with an invalidated replicate are excluded from the check: xPONENT's own
+# reported column treats an invalidated well as "nothing to compare" and
+# reports 0.00 for it (the same artifact as the both-censored case), but we
+# now intentionally use the value inside Invalid(x). Comparing our number to
+# xPONENT's there isn't a correctness check anymore -- it's two different,
+# equally intentional inclusion policies, so a mismatch is expected, not a bug.
 check_cv_agreement <- function(pairs, samples_tidy, tolerance = 0.1) {
   reported <- samples_tidy |>
     dplyr::select(sheet, analyte, sample_resolved, cv_replicates_reported) |>
@@ -49,7 +56,7 @@ check_cv_agreement <- function(pairs, samples_tidy, tolerance = 0.1) {
 
   checked <- pairs |>
     dplyr::left_join(reported, by = c("sheet", "analyte", "sample_resolved")) |>
-    dplyr::filter(!is.na(cv_computed), !is.na(cv_replicates_reported)) |>
+    dplyr::filter(!any_invalidated, !is.na(cv_computed), !is.na(cv_replicates_reported)) |>
     dplyr::mutate(diff_pp = abs(cv_computed - cv_replicates_reported))
 
   disagreements <- checked |> dplyr::filter(diff_pp > tolerance)

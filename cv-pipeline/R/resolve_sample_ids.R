@@ -1,55 +1,65 @@
-# The ID-mapping block isn't consistent across sheets: some call it
-# `Deducing IDs` / `Deducing IDs Single`, some `Deducing Sample IDs` /
-# `Deducing Sample IDs Single`, some have only the paired (non-Single) form,
-# and some have NEITHER block at all. When nothing is available, fall back to
-# positional resolution against `Median` (which always carries real names
-# directly): UnknownN numbering follows the order each distinct real unknown
-# sample first appears in Location (well) order.
-find_block_name <- function(block_index, candidates) {
-  hit <- candidates[candidates %in% block_index$name]
-  if (length(hit) == 0) NA_character_ else hit[1]
+# The ID-mapping block's naming is not just inconsistent across sheets --
+# confirmed to be actively unreliable within a single sheet (one real example:
+# a sheet with two coda blocks both literally named "Deducing Sample IDs",
+# where the second one is the deduplicated "Single" form despite not carrying
+# that suffix). Trusting the name string to tell single from paired is
+# therefore not safe. Instead, every coda block present is extracted and
+# classified by its actual structure -- a block where no `UnknownN` repeats is
+# a "single" form; one where every `UnknownN` appears exactly twice is
+# "paired" (real name + ditto). All available blocks are cross-checked against
+# each other for disagreement, regardless of what any of them are named. When
+# no coda block exists at all, fall back to positional resolution against
+# `Median` (which always carries real names directly): UnknownN numbering
+# follows the order each distinct real unknown sample first appears in
+# Location (well) order.
+extract_coda_rows <- function(raw, block_row) {
+  data_start <- block_row$start + 1L
+  data_end <- block_row$end
+  if (data_end < data_start) return(tibble::tibble(unknown_id = character(), real_name = character()))
+  body <- raw[data_start:data_end, 1:2]
+  names(body) <- c("unknown_id", "real_name")
+  body <- body[!is.na(body$unknown_id) & !is.na(body$real_name), ]
+  tibble::as_tibble(body)
 }
 
 build_unknown_map <- function(raw, block_index, median_sample_ditto_resolved) {
-  single_name <- find_block_name(block_index, c("Deducing IDs Single", "Deducing Sample IDs Single"))
-  paired_name <- find_block_name(block_index, c("Deducing IDs", "Deducing Sample IDs"))
+  coda_rows <- block_index[block_index$kind == "coda", ]
 
-  if (!is.na(single_name)) {
-    single <- extract_block(raw, block_index, single_name)
-    if (nrow(single) == 0) stop(sprintf("`%s` block is empty", single_name), call. = FALSE)
-    if (anyDuplicated(single$unknown_id)) stop(sprintf("Duplicate UnknownN entries in `%s`", single_name), call. = FALSE)
-    map <- stats::setNames(single$real_name, single$unknown_id)
-  } else if (!is.na(paired_name)) {
-    paired <- extract_block(raw, block_index, paired_name)
-    if (nrow(paired) == 0) stop(sprintf("`%s` block is empty", paired_name), call. = FALSE)
-    # First row per unknown_id is the real name, the second is a ditto mark for
-    # replicate 2 -- select by position rather than matching the ditto glyph
-    # itself, which is prone to source-file encoding mismatches.
-    paired_first <- paired[!duplicated(paired$unknown_id), ]
-    map <- stats::setNames(paired_first$real_name, paired_first$unknown_id)
-  } else {
+  if (nrow(coda_rows) == 0) {
     unknown_names <- unique(median_sample_ditto_resolved[classify_sample_type(median_sample_ditto_resolved) == "unknown"])
     if (length(unknown_names) == 0) {
       stop("No ID-mapping block found and no unknown samples in Median to derive one from", call. = FALSE)
     }
-    map <- stats::setNames(unknown_names, paste0("Unknown", seq_along(unknown_names)))
+    return(stats::setNames(unknown_names, paste0("Unknown", seq_along(unknown_names))))
   }
 
-  if (!is.na(single_name) && !is.na(paired_name)) {
-    paired <- extract_block(raw, block_index, paired_name)
-    paired_first <- paired[!duplicated(paired$unknown_id), ]
-    cross <- dplyr::inner_join(
-      tibble::tibble(unknown_id = names(map), real_name = unname(map)),
-      paired_first, by = "unknown_id", suffix = c("_single", "_paired")
-    )
-    mismatched <- cross[cross$real_name_single != cross$real_name_paired, ]
-    if (nrow(mismatched) > 0) {
-      stop(sprintf("`%s` and `%s` disagree for: %s", paired_name, single_name,
-                    paste(mismatched$unknown_id, collapse = ", ")), call. = FALSE)
+  extracted <- lapply(seq_len(nrow(coda_rows)), function(i) extract_coda_rows(raw, coda_rows[i, ]))
+  extracted <- extracted[vapply(extracted, nrow, integer(1)) > 0]
+  if (length(extracted) == 0) {
+    stop("ID-mapping block(s) found but all are empty", call. = FALSE)
+  }
+
+  # First row per unknown_id in a paired block is the real name, the second is
+  # a ditto mark -- select by position rather than matching the ditto glyph
+  # itself, which is prone to source-file encoding mismatches. Deduplicating
+  # every block the same way (a no-op on an already-single block) sidesteps
+  # needing to classify single vs. paired explicitly.
+  dedup <- function(d) d[!duplicated(d$unknown_id), ]
+  maps <- lapply(extracted, function(d) stats::setNames(dedup(d)$real_name, dedup(d)$unknown_id))
+
+  if (length(maps) > 1) {
+    for (i in 2:length(maps)) {
+      common <- intersect(names(maps[[1]]), names(maps[[i]]))
+      mismatched <- common[maps[[1]][common] != maps[[i]][common]]
+      if (length(mismatched) > 0) {
+        stop(sprintf("ID-mapping blocks disagree for: %s", paste(mismatched, collapse = ", ")), call. = FALSE)
+      }
     }
   }
 
-  map
+  # Prefer whichever map is most complete (a "single" block is never longer
+  # than its paired counterpart, but ties break toward more entries either way).
+  maps[[which.max(vapply(maps, length, integer(1)))]]
 }
 
 resolve_sample_name <- function(sample, unknown_map) {

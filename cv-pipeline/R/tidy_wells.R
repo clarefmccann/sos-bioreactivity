@@ -49,6 +49,10 @@ tidy_wells <- function(path, sheet) {
       invalidated_flag = is_invalidated_value(result_raw),
       result_numeric = result_numeric(result_raw),
       below_bead_threshold = bead_count < threshold
+    ) |>
+    dplyr::mutate(
+      result_imputed = impute_below_lloq(result_numeric, censor_flag, analyte),
+      result_log = log_transform(result_imputed)
     )
 
   # Rule 3: cross-reference Audit Logs -- a well can be invalidated there even
@@ -112,7 +116,8 @@ tidy_wells <- function(path, sheet) {
     sheet, batch, run_date, plate, well, location_raw,
     sample_id_raw, participant_id, timepoint, fluid_type, sample_type, sample_resolved,
     analyte, units, median_mfi, net_mfi, bead_count,
-    result_raw, result_numeric, censor_flag, invalidated_flag, below_bead_threshold,
+    result_raw, result_numeric, result_imputed, result_log,
+    censor_flag, invalidated_flag, below_bead_threshold,
     duplicate_id_conflict
   )
 }

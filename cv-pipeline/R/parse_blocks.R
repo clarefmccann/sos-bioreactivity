@@ -7,8 +7,23 @@ parse_block_index <- function(raw) {
   col2 <- raw[[2]]
 
   dt_rows <- which(col1 == "DataType:")
-  coda_rows <- which(col1 %in% c("Deducing IDs", "Deducing IDs Single"))
   crc_row <- which(col1 == "-- CRC --")
+
+  # The ID-mapping block's name is not reliably any fixed string -- confirmed
+  # variants in this data: "Deducing IDs", "Deducing Sample IDs" (sometimes
+  # reused verbatim for both the paired and "Single" forms instead of getting
+  # a distinct suffix), and "Detecting Sample IDs". Whack-a-mole-ing exact
+  # strings missed a real sheet each time a new variant turned up, so this
+  # detects the block structurally instead: after the CRC sentinel, any row
+  # that isn't itself an "UnknownN" row but is immediately followed by one is
+  # a block header, whatever it's actually named.
+  coda_rows <- integer(0)
+  if (length(crc_row) == 1 && crc_row < nrow(raw) - 1) {
+    idx <- (crc_row + 1):(nrow(raw) - 1)
+    is_label <- !is.na(col1[idx]) & !grepl("^Unknown", col1[idx])
+    next_is_unknown <- !is.na(col1[idx + 1]) & grepl("^Unknown", col1[idx + 1])
+    coda_rows <- idx[is_label & next_is_unknown]
+  }
 
   if (length(dt_rows) == 0) stop("No `DataType:` blocks found in sheet", call. = FALSE)
 

@@ -1,5 +1,5 @@
 # CV pipeline -- characterization report
-_Generated 2026-07-17 16:20:49_
+_Generated 2026-08-10 13:35:29_
 
 ## Plates per batch
 |batch                            | n_plates|
@@ -12,6 +12,8 @@ _Generated 2026-07-17 16:20:49_
 |8-4-20 HU CRP box 6              |        1|
 |8-4-20 Hu cytokine box 5         |        1|
 |8-5-20 HU CRP box 8              |        1|
+|8-5-20 HU cytokine box 7         |        1|
+|8-5-20 Hu CRP box 7              |        1|
 |8-5-20 Hu cytokine box 8         |        1|
 |CRP box2 replay                  |        1|
 |Hu Cyto 3plex plt 6 8-4-20       |        1|
@@ -61,7 +63,7 @@ _R² is the instrument-reported value, computed on the post-exclusion curve (xPO
 |IL-10     |Standard4      |           101.550|
 |IL-10     |Standard5      |           104.090|
 |IL-10     |Standard6      |           100.190|
-|IL-6      |Standard1      |               NaN|
+|IL-6      |Standard1      |            61.940|
 |IL-6      |Standard2      |           100.020|
 |IL-6      |Standard3      |           100.265|
 |IL-6      |Standard4      |           100.855|
@@ -175,7 +177,7 @@ _R² is the instrument-reported value, computed on the post-exclusion curve (xPO
 |IL-10     |Standard4      |           106.955|
 |IL-10     |Standard5      |            97.630|
 |IL-10     |Standard6      |           100.235|
-|IL-6      |Standard1      |               NaN|
+|IL-6      |Standard1      |            67.160|
 |IL-6      |Standard2      |           100.145|
 |IL-6      |Standard3      |           100.110|
 |IL-6      |Standard4      |           100.910|
@@ -279,8 +281,8 @@ _R² is the instrument-reported value, computed on the post-exclusion curve (xPO
 |IL-10     |Standard3      |           104.315|
 |IL-10     |Standard4      |            97.230|
 |IL-10     |Standard5      |           101.380|
-|IL-10     |Standard6      |            99.550|
-|IL-6      |Standard1      |               NaN|
+|IL-10     |Standard6      |           160.375|
+|IL-6      |Standard1      |           198.540|
 |IL-6      |Standard2      |            95.840|
 |IL-6      |Standard3      |           103.250|
 |IL-6      |Standard4      |            96.545|
@@ -380,24 +382,24 @@ _R² is the instrument-reported value, computed on the post-exclusion curve (xPO
 ### Standard %Recovery (mean across replicates)
 |analyte   |standard_level | mean_recovery_pct|
 |:---------|:--------------|-----------------:|
-|IL-10     |Standard1      |           100.830|
+|IL-10     |Standard1      |           136.325|
 |IL-10     |Standard2      |            99.595|
 |IL-10     |Standard3      |           102.010|
 |IL-10     |Standard4      |            99.475|
 |IL-10     |Standard5      |           100.780|
 |IL-10     |Standard6      |           103.655|
-|IL-6      |Standard1      |               NaN|
+|IL-6      |Standard1      |            37.190|
 |IL-6      |Standard2      |           100.060|
 |IL-6      |Standard3      |           103.725|
 |IL-6      |Standard4      |           100.750|
 |IL-6      |Standard5      |           100.150|
 |IL-6      |Standard6      |           100.515|
-|TNF-alpha |Standard1      |            99.570|
+|TNF-alpha |Standard1      |           213.475|
 |TNF-alpha |Standard2      |           101.865|
 |TNF-alpha |Standard3      |            99.425|
 |TNF-alpha |Standard4      |           101.395|
 |TNF-alpha |Standard5      |            99.395|
-|TNF-alpha |Standard6      |           100.170|
+|TNF-alpha |Standard6      |           120.475|
 
 ### Standard %CV Replicates (as reported by xPONENT)
 |analyte   |standard_level | cv_reported|
@@ -491,7 +493,7 @@ _R² is the instrument-reported value, computed on the post-exclusion curve (xPO
 |IL-10     |Standard4      |           100.075|
 |IL-10     |Standard5      |           101.450|
 |IL-10     |Standard6      |           103.495|
-|IL-6      |Standard1      |               NaN|
+|IL-6      |Standard1      |            62.155|
 |IL-6      |Standard2      |           100.075|
 |IL-6      |Standard3      |           100.000|
 |IL-6      |Standard4      |           101.110|
@@ -597,7 +599,7 @@ _R² is the instrument-reported value, computed on the post-exclusion curve (xPO
 |IL-10     |Standard4      |           101.090|
 |IL-10     |Standard5      |           100.435|
 |IL-10     |Standard6      |           100.915|
-|IL-6      |Standard1      |               NaN|
+|IL-6      |Standard1      |            49.000|
 |IL-6      |Standard2      |           100.005|
 |IL-6      |Standard3      |           100.095|
 |IL-6      |Standard4      |           100.000|
@@ -659,6 +661,110 @@ _This is the single most important number in the report -- an analyte where most
 |IL-10     |        50|         64.5|       179|                 0|        50|
 |IL-6      |        50|         58.0|       140|                 0|        50|
 |TNF-alpha |        50|         50.0|        70|                 0|        50|
+
+---
+
+# Characterization: HU cytokine saliva plt 7
+
+## Run metadata
+- Batch: 8-5-20 HU cytokine box 7
+- Run date: 2020-08-05 11:01:00
+- Instrument SN: LX10014290402
+- Protocol: 7-28-20 Human cytokine saliva
+- Kit: Cytokine (lot 3497399, expires 2021-05-31, Millipore)
+
+### Analytes
+|analyte   |bead_id |units |curve_model          | r_squared|
+|:---------|:-------|:-----|:--------------------|---------:|
+|IL-10     |27      |pg/ml |Logistic 5P Weighted |     0.998|
+|IL-6      |57      |pg/ml |Logistic 5P Weighted |     0.999|
+|TNF-alpha |75      |pg/ml |Logistic 5P Weighted |     0.996|
+
+## Layout inventory
+- Total wells: 94
+|sample_type | n_wells|
+|:-----------|-------:|
+|background  |       2|
+|standard    |      12|
+|unknown     |      80|
+- **WARNING**: 1 sample(s) do not have replicate depth 2 (see warnings)
+
+## Standard curve health
+_R² is the instrument-reported value, computed on the post-exclusion curve (xPONENT refits after invalidation)._
+|analyte   | nominal_range_low| nominal_range_high| effective_range_low| effective_range_high| n_levels_excluded|curve_model          | r_squared| n_standards_invalidated|
+|:---------|-----------------:|------------------:|-------------------:|--------------------:|-----------------:|:--------------------|---------:|-----------------------:|
+|IL-10     |               3.2|              10000|                16.0|                10000|                 1|Logistic 5P Weighted |     0.998|                       1|
+|IL-6      |               3.2|              10000|                 3.2|                10000|                 1|Logistic 5P Weighted |     0.999|                       1|
+|TNF-alpha |               3.2|              10000|                 3.2|                10000|                 1|Logistic 5P Weighted |     0.996|                       1|
+
+### Standard %Recovery (mean across replicates)
+|analyte   |standard_level | mean_recovery_pct|
+|:---------|:--------------|-----------------:|
+|IL-10     |Standard1      |           108.305|
+|IL-10     |Standard2      |           100.160|
+|IL-10     |Standard3      |            98.295|
+|IL-10     |Standard4      |           103.790|
+|IL-10     |Standard5      |            98.710|
+|IL-10     |Standard6      |           118.635|
+|IL-6      |Standard1      |           103.100|
+|IL-6      |Standard2      |           103.820|
+|IL-6      |Standard3      |            67.900|
+|IL-6      |Standard4      |           101.145|
+|IL-6      |Standard5      |           100.005|
+|IL-6      |Standard6      |           100.120|
+|TNF-alpha |Standard1      |           101.395|
+|TNF-alpha |Standard2      |            98.315|
+|TNF-alpha |Standard3      |            79.315|
+|TNF-alpha |Standard4      |            98.505|
+|TNF-alpha |Standard5      |           101.510|
+|TNF-alpha |Standard6      |           101.225|
+
+### Standard %CV Replicates (as reported by xPONENT)
+|analyte   |standard_level | cv_reported|
+|:---------|:--------------|-----------:|
+|IL-10     |Standard1      |      31.389|
+|IL-6      |Standard1      |      36.445|
+|TNF-alpha |Standard1      |       8.546|
+|IL-10     |Standard2      |       0.919|
+|IL-6      |Standard2      |      19.179|
+|TNF-alpha |Standard2      |       2.182|
+|IL-10     |Standard3      |       1.388|
+|IL-6      |Standard3      |       0.000|
+|TNF-alpha |Standard3      |       0.000|
+|IL-10     |Standard4      |       5.652|
+|IL-6      |Standard4      |       7.180|
+|TNF-alpha |Standard4      |       3.080|
+|IL-10     |Standard5      |       3.712|
+|IL-6      |Standard5      |       5.351|
+|TNF-alpha |Standard5      |       8.918|
+|IL-10     |Standard6      |       0.000|
+|IL-6      |Standard6      |       2.349|
+|TNF-alpha |Standard6      |      10.433|
+
+## Control performance
+_(no rows)_
+
+## Quantifiability (unknowns only)
+_This is the single most important number in the report -- an analyte where most samples are below the LLOQ cannot be reported as continuous regardless of CV quality._
+|analyte   |censor_flag |  n| pct|
+|:---------|:-----------|--:|---:|
+|IL-10     |ok          | 80| 100|
+|IL-6      |ok          | 80| 100|
+|TNF-alpha |ok          | 80| 100|
+
+### Invalidated unknown wells
+|analyte   | n_invalidated|
+|:---------|-------------:|
+|IL-10     |             0|
+|IL-6      |             0|
+|TNF-alpha |             0|
+
+## Bead counts
+|analyte   | min_count| median_count| max_count| n_below_threshold| threshold|
+|:---------|---------:|------------:|---------:|-----------------:|---------:|
+|IL-10     |        50|         67.5|       145|                 0|        50|
+|IL-6      |        50|         57.0|       132|                 0|        50|
+|TNF-alpha |        50|         50.0|        90|                 0|        50|
 
 ---
 
@@ -798,11 +904,11 @@ _R² is the instrument-reported value, computed on the post-exclusion curve (xPO
 ### Standard %Recovery (mean across replicates)
 |analyte |standard_level | mean_recovery_pct|
 |:-------|:--------------|-----------------:|
-|CRP     |Standard1      |            93.860|
+|CRP     |Standard1      |            57.470|
 |CRP     |Standard2      |           104.745|
 |CRP     |Standard3      |            94.030|
 |CRP     |Standard4      |           110.415|
-|CRP     |Standard5      |               NaN|
+|CRP     |Standard5      |           201.330|
 |CRP     |Standard6      |           103.050|
 |CRP     |Standard7      |           101.090|
 
@@ -1023,7 +1129,7 @@ _R² is the instrument-reported value, computed on the post-exclusion curve (xPO
 |CRP     |Standard4      |           101.245|
 |CRP     |Standard5      |           100.920|
 |CRP     |Standard6      |           104.500|
-|CRP     |Standard7      |           100.000|
+|CRP     |Standard7      |           157.905|
 
 ### Standard %CV Replicates (as reported by xPONENT)
 |analyte |standard_level | cv_reported|
@@ -1096,7 +1202,7 @@ _R² is the instrument-reported value, computed on the post-exclusion curve (xPO
 |CRP     |Standard4      |            96.645|
 |CRP     |Standard5      |           102.310|
 |CRP     |Standard6      |            99.875|
-|CRP     |Standard7      |           100.000|
+|CRP     |Standard7      |           135.340|
 
 ### Standard %CV Replicates (as reported by xPONENT)
 |analyte |standard_level | cv_reported|
@@ -1128,6 +1234,79 @@ _This is the single most important number in the report -- an analyte where most
 |analyte | min_count| median_count| max_count| n_below_threshold| threshold|
 |:-------|---------:|------------:|---------:|-----------------:|---------:|
 |CRP     |        12|           50|        50|                33|        50|
+
+---
+
+# Characterization: Hu CRP saliva plt 7
+
+## Run metadata
+- Batch: 8-5-20 Hu CRP box 7
+- Run date: 2020-08-05 13:05:00
+- Instrument SN: LX10014290402
+- Protocol: 12-18-19 Human CRP saliva
+- Kit: Human CRP (lot 3385047, expires 2020-09-30, Millipore)
+
+### Analytes
+|analyte |bead_id |units |curve_model          | r_squared|
+|:-------|:-------|:-----|:--------------------|---------:|
+|CRP     |19      |ng/ml |Logistic 5P Weighted |     0.981|
+
+## Layout inventory
+- Total wells: 96
+|sample_type | n_wells|
+|:-----------|-------:|
+|background  |       2|
+|standard    |      14|
+|unknown     |      80|
+- **WARNING**: 1 sample(s) do not have replicate depth 2 (see warnings)
+
+## Standard curve health
+_R² is the instrument-reported value, computed on the post-exclusion curve (xPONENT refits after invalidation)._
+|analyte | nominal_range_low| nominal_range_high| effective_range_low| effective_range_high| n_levels_excluded|curve_model          | r_squared| n_standards_invalidated|
+|:-------|-----------------:|------------------:|-------------------:|--------------------:|-----------------:|:--------------------|---------:|-----------------------:|
+|CRP     |             0.012|                 50|               0.012|                 12.5|                 1|Logistic 5P Weighted |     0.981|                       1|
+
+### Standard %Recovery (mean across replicates)
+|analyte |standard_level | mean_recovery_pct|
+|:-------|:--------------|-----------------:|
+|CRP     |Standard1      |           114.515|
+|CRP     |Standard2      |           107.490|
+|CRP     |Standard3      |            98.100|
+|CRP     |Standard4      |            95.390|
+|CRP     |Standard5      |           109.095|
+|CRP     |Standard6      |           105.870|
+|CRP     |Standard7      |           103.580|
+
+### Standard %CV Replicates (as reported by xPONENT)
+|analyte |standard_level | cv_reported|
+|:-------|:--------------|-----------:|
+|CRP     |Standard1      |       0.000|
+|CRP     |Standard2      |       3.434|
+|CRP     |Standard3      |       9.203|
+|CRP     |Standard4      |      10.365|
+|CRP     |Standard5      |       5.583|
+|CRP     |Standard6      |      27.823|
+|CRP     |Standard7      |      25.331|
+
+## Control performance
+_(no rows)_
+
+## Quantifiability (unknowns only)
+_This is the single most important number in the report -- an analyte where most samples are below the LLOQ cannot be reported as continuous regardless of CV quality._
+|analyte |censor_flag |  n|  pct|
+|:-------|:-----------|--:|----:|
+|CRP     |below_lloq  |  1|  1.2|
+|CRP     |ok          | 79| 98.8|
+
+### Invalidated unknown wells
+|analyte | n_invalidated|
+|:-------|-------------:|
+|CRP     |             0|
+
+## Bead counts
+|analyte | min_count| median_count| max_count| n_below_threshold| threshold|
+|:-------|---------:|------------:|---------:|-----------------:|---------:|
+|CRP     |        50|           50|        50|                 0|        50|
 
 ---
 
@@ -1163,8 +1342,8 @@ _R² is the instrument-reported value, computed on the post-exclusion curve (xPO
 ### Standard %Recovery (mean across replicates)
 |analyte |standard_level | mean_recovery_pct|
 |:-------|:--------------|-----------------:|
-|CRP     |Standard1      |            94.920|
-|CRP     |Standard2      |           107.960|
+|CRP     |Standard1      |           121.350|
+|CRP     |Standard2      |           124.420|
 |CRP     |Standard3      |           100.805|
 |CRP     |Standard4      |            95.830|
 |CRP     |Standard5      |           104.345|
@@ -1204,7 +1383,3 @@ _This is the single most important number in the report -- an analyte where most
 
 ---
 
-## Sheets not characterized
-
-- **Human_cytokine_rawdata.xlsx :: HU cytokine saliva plt 7**: Unknown ID map is incomplete: missing Unknown40 (map has 39 entries, Result references 40 distinct UnknownN). This usually means Median has the SAME sample label typed at two different wells, which breaks positional inference when no Deducing IDs block exists -- check Median for a duplicated label and resolve against the plate loading manifest.
-- **human_cvd_panel_crp_raw_data.xlsx :: Hu CRP saliva plt 7**: Unknown ID map is incomplete: missing Unknown40 (map has 39 entries, Result references 40 distinct UnknownN). This usually means Median has the SAME sample label typed at two different wells, which breaks positional inference when no Deducing IDs block exists -- check Median for a duplicated label and resolve against the plate loading manifest.

@@ -19,6 +19,7 @@ execute:
 ```{r setup, echo=FALSE}
 # quarto render sos-bioreactivity-analyses.qmd
 
+Sys.setlocale("LC_CTYPE", "en_US.UTF-8")
 
 pacman::p_load(
   "dplyr",
@@ -1945,6 +1946,176 @@ timing_results_paragraph <- paste(sapply(timing_summary, function(s) {
 
 **Results.** To disentangle pubertal status from chronological age, each reactivity outcome was regressed simultaneously on mean-centered pubertal status (PDS+line drawings composite) and mean-centered age at session (`age_at_session_c`). The status coefficient reflects status beyond that expected for age (i.e., early maturation); the `age_at_session_c` coefficient reflects age beyond that expected for status. After FDR correction within each predictor term across all 13 reactivity outcomes: `r timing_results_paragraph` Scatter plots of timing predictors against biomarker reactivity outcomes are shown below.
 
+## Forest Plot: Effect of Pubertal Status Controlling for Age
+
+Effect of pubertal status (PUBcomp, centered) on each reactivity outcome, from the joint model above (`reactivity ~ pubertal status + age at session`, both centered). Points are the status coefficient; bars are 95% CI; blue marks FDR-significant effects (*p*~FDR~ < .05).
+
+```{r timing-status-forest, fig.width=10, fig.height=6.5}
+# Greek letters (Delta, beta) built via intToUtf8() and re-tagged as UTF-8
+# rather than relying on the literal characters already in reactivity_labels
+# surviving whatever locale this renders under -- under a "C" locale, R's
+# text-rendering path (ggplot/grid) can misread genuinely-correct UTF-8 bytes
+# tagged Encoding="unknown" as single-byte junk, even though e.g. a kable/HTML
+# table of the same strings displays fine (browser text isn't subject to
+# this). Cheap insurance either way.
+delta_sym <- intToUtf8(916)
+beta_sym  <- intToUtf8(946)
+cardio_domain_label <- paste0("Cardiovascular (", delta_sym, "HR)")
+
+status_term_label <- paste0(puberty_labels[1], " (centered)")
+
+forest_dat <- timing_joint_tbl |>
+  filter(term == status_term_label) |>
+  mutate(Reactivity = {x <- Reactivity; Encoding(x) <- "UTF-8"; x}) |>
+  mutate(
+    domain = case_when(
+      grepl("^.HR:", Reactivity) ~ cardio_domain_label,
+      grepl("Subj Stress", Reactivity) ~ "Subjective Stress",
+      TRUE ~ "Biomarkers"
+    ),
+    domain = factor(domain, levels = c(cardio_domain_label, "Biomarkers", "Subjective Stress")),
+    sig    = ifelse(p_fdr < 0.05, "FDR-significant (p < .05)", "Not significant"),
+    ci_lo  = estimate - 1.96 * std.error,
+    ci_hi  = estimate + 1.96 * std.error,
+    Reactivity = factor(Reactivity, levels = rev({x <- reactivity_labels; Encoding(x) <- "UTF-8"; x}))
+  )
+
+ggplot(forest_dat, aes(x = estimate, y = Reactivity, color = sig)) +
+  geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.5, color = "grey45") +
+  geom_errorbar(aes(xmin = ci_lo, xmax = ci_hi), width = 0, linewidth = 0.7, orientation = "y") +
+  geom_point(size = 3) +
+  facet_grid(rows = vars(domain), scales = "free_y", space = "free_y", switch = "y") +
+  scale_color_manual(values = c("FDR-significant (p < .05)" = "#2a78d6", "Not significant" = "#b9b8b2")) +
+  labs(
+    x = paste0("Effect of pubertal status on reactivity (", beta_sym, ", controlling for age)"),
+    y = NULL,
+    color = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    strip.placement = "outside",
+    strip.text.y.left = element_text(angle = 0, face = "bold", hjust = 0),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom"
+  )
+```
+
+## Trend Plot: Age-Adjusted Effect of Pubertal Status on Reactivity
+
+The forest plot above shows the size of the age-adjusted pubertal-status effect; this shows the trend itself. Each panel is a **partial-residual (added-variable) plot**: both pubertal status and the reactivity outcome are first residualized on age at session, then plotted against each other. The slope of the fitted line in each panel is mathematically identical to that outcome's status coefficient in the joint model above -- this is what that coefficient looks like as a scatter of actual data rather than a single point estimate.
+
+```{r timing-status-trend, fig.width=13, fig.height=9}
+status_sig <- timing_joint_tbl |>
+  filter(term == status_term_label) |>
+  select(Reactivity, p_fdr) |>
+  mutate(sig = ifelse(p_fdr < 0.05, "FDR-significant (p < .05)", "Not significant"))
+
+react_partial <- map_dfr(setNames(reactivity_vars, reactivity_labels), function(rv) {
+  dat <- timing_reactivity |>
+    select(all_of(c(rv, "PUBcomp", "age_at_session"))) |>
+    na.omit()
+  if (nrow(dat) < 5) return(NULL)
+  resid_y <- resid(lm(as.formula(paste(rv, "~ age_at_session")), data = dat))
+  resid_x <- resid(lm(PUBcomp ~ age_at_session, data = dat))
+  tibble(resid_status = resid_x, resid_outcome = resid_y)
+}, .id = "Reactivity") |>
+  left_join(status_sig, by = "Reactivity") |>
+  mutate(
+    domain = case_when(
+      grepl("^.HR:", Reactivity) ~ cardio_domain_label,
+      grepl("Subj Stress", Reactivity) ~ "Subjective Stress",
+      TRUE ~ "Biomarkers"
+    ),
+    domain = factor(domain, levels = c(cardio_domain_label, "Biomarkers", "Subjective Stress")),
+    Reactivity = {x <- Reactivity; Encoding(x) <- "UTF-8"; x},
+    Reactivity = factor(Reactivity, levels = {x <- reactivity_labels; Encoding(x) <- "UTF-8"; x})
+  )
+
+ggplot(react_partial, aes(x = resid_status, y = resid_outcome)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey70", linewidth = 0.4) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey70", linewidth = 0.4) +
+  geom_point(alpha = 0.5, size = 1.5, color = "grey30") +
+  geom_smooth(aes(color = sig, fill = sig), method = "lm", formula = y ~ x, se = TRUE, linewidth = 0.9, alpha = 0.15) +
+  facet_wrap(~Reactivity, scales = "free", ncol = 4) +
+  scale_color_manual(values = c("FDR-significant (p < .05)" = "#2a78d6", "Not significant" = "#b9b8b2"), drop = FALSE) +
+  scale_fill_manual(values = c("FDR-significant (p < .05)" = "#2a78d6", "Not significant" = "#b9b8b2"), drop = FALSE) +
+  labs(
+    x = "Pubertal status (residualized on age)",
+    y = "Reactivity (residualized on age)",
+    color = NULL, fill = NULL
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(legend.position = "bottom", strip.text = element_text(size = 8))
+```
+
+### Trend Plot: Significant Relationships Only
+
+Same partial-residual plots as above, restricted to the `r sum(status_sig$sig == "FDR-significant (p < .05)")` outcomes that survived FDR correction -- a cleaner figure for highlighting just the significant status-beyond-age effects.
+
+```{r timing-status-trend-sig, fig.width=13, fig.height=3.5}
+react_partial_sig <- react_partial |> filter(sig == "FDR-significant (p < .05)")
+
+ggplot(react_partial_sig, aes(x = resid_status, y = resid_outcome)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey70", linewidth = 0.4) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey70", linewidth = 0.4) +
+  geom_point(alpha = 0.5, size = 1.5, color = "grey30") +
+  geom_smooth(method = "lm", formula = y ~ x, se = TRUE, color = "#2a78d6", fill = "#2a78d6", linewidth = 0.9, alpha = 0.15) +
+  facet_wrap(~Reactivity, scales = "free", ncol = 4) +
+  labs(
+    x = "Pubertal status (residualized on age)",
+    y = "Reactivity (residualized on age)"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(strip.text = element_text(size = 9, face = "bold"))
+```
+
+## Correlation Matrix: Pubertal Timing, Age, and Psychosocial Predictors
+
+Intercorrelations among the individual-difference predictors used across the puberty and psychosocial hypotheses: pubertal status (PUBcomp composite), age at menarche, perceived pubertal timing (PDS F5), age at session, BFNES (fear of negative evaluation), and CES-DC (depressive symptoms). This is not a predictor-vs-reactivity matrix (those are reported separately above and in Hypothesis 3 below) -- it's the relationships among the predictors themselves, useful for spotting overlap/multicollinearity before interpreting single-predictor models one at a time.
+
+```{r predictors-corr-matrix, fig.width=9, fig.height=8}
+predictors_df <- timing_df |>
+  select(SampleID, PUBcomp, age_menarche, PDS_F5, age_at_session) |>
+  left_join(bfnes, by = "SampleID") |>
+  left_join(dep, by = "SampleID")
+
+predictors_matrix <- predictors_df |> select(-SampleID) |> as.matrix()
+colnames(predictors_matrix) <- c(
+  "Pubertal Status (Composite)", "Age at Menarche", "Perceived Pubertal Timing (PDS F5)",
+  "Age at Session", "BFNES (Fear of Negative Evaluation)", "CES-D (Depression)"
+)
+
+predictors_rcorrs <- rcorr(predictors_matrix)
+
+# Single family of 15 pairwise tests (these 6 predictors don't split into the
+# domain blocks the reactivity-outcome matrices use), FDR-corrected together.
+predictors_fdr_mat <- predictors_rcorrs$P
+ut <- upper.tri(predictors_fdr_mat)
+predictors_fdr_mat[ut] <- p.adjust(predictors_fdr_mat[ut], method = "fdr")
+predictors_fdr_mat[lower.tri(predictors_fdr_mat)] <- t(predictors_fdr_mat)[lower.tri(predictors_fdr_mat)]
+
+plot_sig_corrplot(predictors_rcorrs$r, predictors_fdr_mat)
+```
+
+*Circle size and color reflect correlation magnitude (red = negative, blue = positive). X marks indicate non-significant correlations after FDR correction (p~FDR~ ≥ .05, applied across all 15 pairs). Sample sizes vary by pair due to missingness (age at menarche in particular, n = 53 vs. n = 74 for most other variables); `rcorr()` uses pairwise-complete observations.*
+
+### Correlation p-values: Predictors × Predictors
+
+```{r predictors-corr-pvalues}
+# predictors_fdr_mat already computed in predictors-corr-matrix chunk above
+predictors_fdr_mat |>
+  as.data.frame() |>
+  mutate(across(everything(), \(x) {
+    sig  <- !is.na(x) & x < 0.05
+    xlab <- if_else(is.na(x), "—", as.character(round(x, 4)))
+    cell_spec(xlab, bold = sig, color = if_else(sig, "#2166ac", "black"))
+  })) |>
+  kable(escape = FALSE,
+        caption = "P-values FDR-corrected across all 15 predictor pairs (bold = p_FDR < .05).") |>
+  kable_styling(bootstrap_options = "hover")
+```
+
 ## Scatter Plots: Timing × Biomarker Reactivity
 
 ```{r timing-reactivity-scatter, results='asis', fig.width=10, fig.height=5}
@@ -2001,7 +2172,7 @@ for (pv in puberty_vars) {
       tibble(
         Biomarker = bv,
         Timepoint = paste0("T", tp),
-        r         = round(ct$estimate, 3),
+        r         = round(unname(ct$estimate), 3),
         p_raw     = ct$p.value
       )
     })
@@ -2025,14 +2196,105 @@ for (pv in puberty_vars) {
       round(x, 4), bold = !is.na(x) & x < 0.05,
       color = if_else(!is.na(x) & x < 0.05, "#2166ac", "black")
     ))) |>
-    kable(escape = FALSE,
+    kable(format = "html", escape = FALSE,
           col.names = c("Biomarker", "r", "p (FDR)", "r", "p (FDR)", "r", "p (FDR)", "r", "p (FDR)"),
           caption   = paste0("Correlations: ", puberty_label_map[[pv]],
-                             " × biomarker levels (FDR-adjusted within immune/hormones; bold = p_FDR < .05)")) |>
+                             " ", intToUtf8(215), " biomarker levels (FDR-adjusted within immune/hormones; bold = p_FDR < .05)")) |>
     add_header_above(c(" " = 1, "T1" = 2, "T2" = 2, "T3" = 2, "T4" = 2)) |>
     kable_styling(bootstrap_options = "hover", full_width = FALSE) |>
-    print()
+    as.character() |>
+    cat()
 }
+```
+
+## Age-Adjusted Effect of Pubertal Status on Raw Biomarker Levels
+
+The correlations above are unadjusted (pubertal status alone). Here each log-transformed biomarker level, at each timepoint, is regressed jointly on pubertal status (PUBcomp) and age at session, isolating the status-beyond-age effect the same way the reactivity models above do.
+
+```{r puberty-levels-regressions}
+biomarker_levels <- biomarker_levels |> left_join(age_df, by = "SampleID")
+
+bio_vars_log    <- c("CRP_log", "IL10_log", "IL6_log", "TNFalpha_log", "DHEA_log", "Testosterone_log", "Cortisol_log")
+bio_labels_map  <- setNames(
+  c("CRP", "IL-10", "IL-6", paste0("TNF-", intToUtf8(945)), "DHEA", "Testosterone", "Cortisol"),
+  bio_vars_log
+)
+
+levels_joint_tbl <- map_dfr(bio_vars_log, function(bv) {
+  map_dfr(1:4, function(tp) {
+    dat <- biomarker_levels |>
+      filter(Time == tp) |>
+      select(all_of(c(bv, "PUBcomp", "age_at_session"))) |>
+      na.omit()
+    if (nrow(dat) < 5) return(NULL)
+    fit <- lm(as.formula(paste(bv, "~ PUBcomp + age_at_session")), data = dat)
+    broom::tidy(fit) |>
+      filter(term == "PUBcomp") |>
+      mutate(Biomarker = bio_labels_map[bv], Timepoint = paste0("T", tp), n = nrow(dat))
+  })
+}) |>
+  mutate(group = if_else(Biomarker %in% c("CRP", "IL-10", "IL-6", paste0("TNF-", intToUtf8(945))), "Immune", "Hormones")) |>
+  group_by(group) |>
+  mutate(p_fdr = round(p.adjust(p.value, method = "fdr"), 4)) |>
+  ungroup() |>
+  mutate(estimate = round(estimate, 3))
+
+levels_joint_tbl |>
+  pivot_wider(id_cols = Biomarker, names_from = Timepoint, values_from = c(estimate, p_fdr),
+              names_glue = "{Timepoint}_{.value}") |>
+  select(Biomarker, T1_estimate, T1_p_fdr, T2_estimate, T2_p_fdr, T3_estimate, T3_p_fdr, T4_estimate, T4_p_fdr) |>
+  mutate(across(ends_with("_p_fdr"), \(x) cell_spec(
+    x, bold = !is.na(x) & x < 0.05, color = if_else(!is.na(x) & x < 0.05, "#2166ac", "black")
+  ))) |>
+  kable(format = "html", escape = FALSE,
+        col.names = c("Biomarker", "b", "p (FDR)", "b", "p (FDR)", "b", "p (FDR)", "b", "p (FDR)"),
+        caption = "Effect of pubertal status on log biomarker level, controlling for age (FDR within immune/hormones; bold = p_FDR < .05)") |>
+  add_header_above(c(" " = 1, "T1" = 2, "T2" = 2, "T3" = 2, "T4" = 2)) |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+### Trend Plot: Age-Adjusted Effect of Pubertal Status on Raw Biomarker Levels
+
+Same partial-residual approach as the reactivity trend plot above -- both pubertal status and each biomarker level are residualized on age at session (separately per timepoint), then plotted against each other. Rows are biomarkers, columns are timepoints (T1–T4).
+
+```{r puberty-levels-trend, fig.width=11, fig.height=12}
+levels_sig <- levels_joint_tbl |>
+  mutate(sig = ifelse(p_fdr < 0.05, "FDR-significant (p < .05)", "Not significant")) |>
+  select(Biomarker, Timepoint, sig)
+
+levels_partial <- map_dfr(bio_vars_log, function(bv) {
+  map_dfr(1:4, function(tp) {
+    dat <- biomarker_levels |>
+      filter(Time == tp) |>
+      select(all_of(c(bv, "PUBcomp", "age_at_session"))) |>
+      na.omit()
+    if (nrow(dat) < 5) return(NULL)
+    resid_y <- resid(lm(as.formula(paste(bv, "~ age_at_session")), data = dat))
+    resid_x <- resid(lm(PUBcomp ~ age_at_session, data = dat))
+    tibble(Biomarker = bio_labels_map[bv], Timepoint = paste0("T", tp), resid_status = resid_x, resid_level = resid_y)
+  })
+}) |>
+  left_join(levels_sig, by = c("Biomarker", "Timepoint")) |>
+  mutate(
+    Biomarker = factor(Biomarker, levels = unname(bio_labels_map)),
+    Timepoint = factor(Timepoint, levels = paste0("T", 1:4))
+  )
+
+ggplot(levels_partial, aes(x = resid_status, y = resid_level)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey70", linewidth = 0.4) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey70", linewidth = 0.4) +
+  geom_point(alpha = 0.4, size = 1.2, color = "grey30") +
+  geom_smooth(aes(color = sig, fill = sig), method = "lm", formula = y ~ x, se = TRUE, linewidth = 0.8, alpha = 0.15) +
+  facet_grid(Biomarker ~ Timepoint, scales = "free") +
+  scale_color_manual(values = c("FDR-significant (p < .05)" = "#2a78d6", "Not significant" = "#b9b8b2"), drop = FALSE) +
+  scale_fill_manual(values = c("FDR-significant (p < .05)" = "#2a78d6", "Not significant" = "#b9b8b2"), drop = FALSE) +
+  labs(
+    x = "Pubertal status (residualized on age)",
+    y = "Log biomarker level (residualized on age)",
+    color = NULL, fill = NULL
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(legend.position = "bottom", strip.text.y = element_text(angle = 0), strip.text = element_text(size = 8))
 ```
 
 ---
@@ -2070,7 +2332,7 @@ dep_corr_long <- map_dfr(bio_vars, function(bv) {
     if (nrow(dat) < 5) return(NULL)
     ct <- cor.test(dat[[bv]], dat$CESD_total)
     tibble(Biomarker = bv, Timepoint = paste0("T", tp),
-           r = round(ct$estimate, 3), p_raw = ct$p.value)
+           r = round(unname(ct$estimate), 3), p_raw = ct$p.value)
   })
 }) |>
   mutate(group = if_else(
@@ -2092,9 +2354,9 @@ dep_corr_tbl |>
     round(x, 4), bold = !is.na(x) & x < 0.05,
     color = if_else(!is.na(x) & x < 0.05, "#2166ac", "black")
   ))) |>
-  kable(escape = FALSE,
+  kable(format = "html", escape = FALSE,
         col.names = c("Biomarker", "r", "p (FDR)", "r", "p (FDR)", "r", "p (FDR)", "r", "p (FDR)"),
-        caption   = "Correlations: CES-DC × biomarker levels (FDR-adjusted p-values; bold = p_FDR < .05)") |>
+        caption   = paste0("Correlations: CES-DC ", intToUtf8(215), " biomarker levels (FDR-adjusted p-values; bold = p_FDR < .05)")) |>
   add_header_above(c(" " = 1, "T1" = 2, "T2" = 2, "T3" = 2, "T4" = 2)) |>
   kable_styling(bootstrap_options = "hover", full_width = FALSE)
 ```
@@ -2125,7 +2387,7 @@ dep_reactivity <- all_difference |>
 
 dep_react_corrs <- map_dfr(setNames(reactivity_vars, reactivity_labels), function(rv) {
   ct <- cor.test(dep_reactivity[[rv]], dep_reactivity$CESD_total)
-  tibble(r = round(ct$estimate, 3), p_raw = ct$p.value)
+  tibble(r = round(unname(ct$estimate), 3), p_raw = ct$p.value)
 }, .id = "Reactivity") |>
   mutate(domain = case_when(
     str_detect(Reactivity, "^ΔHR")                                        ~ "HR",
@@ -2197,7 +2459,7 @@ bfnes_corr_long <- map_dfr(bio_vars, function(bv) {
     if (nrow(dat) < 5) return(NULL)
     ct <- cor.test(dat[[bv]], dat$BFNES_total)
     tibble(Biomarker = bv, Timepoint = paste0("T", tp),
-           r = round(ct$estimate, 3), p_raw = ct$p.value)
+           r = round(unname(ct$estimate), 3), p_raw = ct$p.value)
   })
 }) |>
   mutate(group = if_else(
@@ -2219,9 +2481,9 @@ bfnes_corr_tbl |>
     round(x, 4), bold = !is.na(x) & x < 0.05,
     color = if_else(!is.na(x) & x < 0.05, "#2166ac", "black")
   ))) |>
-  kable(escape = FALSE,
+  kable(format = "html", escape = FALSE,
         col.names = c("Biomarker", "r", "p (FDR)", "r", "p (FDR)", "r", "p (FDR)", "r", "p (FDR)"),
-        caption   = "Correlations: BFNES × biomarker levels (FDR-adjusted; bold = p_FDR < .05)") |>
+        caption   = paste0("Correlations: BFNES ", intToUtf8(215), " biomarker levels (FDR-adjusted; bold = p_FDR < .05)")) |>
   add_header_above(c(" " = 1, "T1" = 2, "T2" = 2, "T3" = 2, "T4" = 2)) |>
   kable_styling(bootstrap_options = "hover", full_width = FALSE)
 ```
@@ -2252,7 +2514,7 @@ bfnes_reactivity <- all_difference |>
 
 bfnes_react_corrs <- map_dfr(setNames(reactivity_vars, reactivity_labels), function(rv) {
   ct <- cor.test(bfnes_reactivity[[rv]], bfnes_reactivity$BFNES_total)
-  tibble(r = round(ct$estimate, 3), p_raw = ct$p.value)
+  tibble(r = round(unname(ct$estimate), 3), p_raw = ct$p.value)
 }, .id = "Reactivity") |>
   mutate(domain = case_when(
     str_detect(Reactivity, "^ΔHR")                                        ~ "HR",
@@ -2441,7 +2703,7 @@ map_dfr(hormone_vars, function(hv) {
     if (nrow(dat) < 5) return(NULL)
     ct <- cor.test(dat[[hv]], dat$elapsed)
     tibble(Hormone = hv, Timepoint = paste0("T", tp),
-           r = round(ct$estimate, 3), p = round(ct$p.value, 3))
+           r = round(unname(ct$estimate), 3), p = round(ct$p.value, 3))
   })
 }) |>
   pivot_wider(names_from = Timepoint, values_from = c(r, p),
@@ -2451,9 +2713,9 @@ map_dfr(hormone_vars, function(hv) {
     round(x, 3), bold = x < 0.05,
     color = if_else(x < 0.05, "#2166ac", "black")
   ))) |>
-  kable(escape = FALSE,
+  kable(format = "html", escape = FALSE,
         col.names = c("Hormone", "r", "p", "r", "p", "r", "p"),
-        caption = "Elapsed minutes from T1 × hormone level") |>
+        caption = paste0("Elapsed minutes from T1 ", intToUtf8(215), " hormone level")) |>
   add_header_above(c(" " = 1, "T2" = 2, "T3" = 2, "T4" = 2)) |>
   kable_styling(bootstrap_options = "hover", full_width = FALSE) |>
   print()
@@ -2502,7 +2764,7 @@ map_dfr(names(hormone_wake_outcomes), function(hv) {
   tibble(
     Outcome = hormone_wake_outcomes[[hv]],
     n       = nrow(dat),
-    r       = round(ct$estimate, 3),
+    r       = round(unname(ct$estimate), 3),
     p       = round(ct$p.value, 3)
   )
 }) |>

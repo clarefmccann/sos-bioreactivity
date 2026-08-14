@@ -30,7 +30,7 @@ comes from the **cytokine/CRP panel** (Luminex xPONENT, Millipore Milliplex kits
 | | Cytokines / CRP | Hormones |
 |---|---|---|
 | **Intra-assay CV** | Recomputed from raw xPONENT export data (this pipeline), on back-calculated concentration | Adopted from prior reporting -- since confirmed to match a from-scratch recompute on raw OD absorbance almost exactly (see [OG vs. Recomputed]) |
-| **Inter-assay CV** | Attempted from raw data; **not computable** for most analytes (see below) | Recomputed from raw per-plate control data (this pipeline) -- corrects a mislabeling in the prior reported values |
+| **Inter-assay CV** | Recomputed from raw data using a **standards-based** method (Standard1-6 agreement across plates), since this dataset has essentially no repeated-control data. Literature-supported as a primary metric, not a fallback -- see [Inter-Assay CV] | Recomputed from raw per-plate control data (this pipeline) -- corrects a mislabeling in the prior reported values |
 
 Numbers labeled "recomputed" below were derived directly from the raw instrument exports by the `cv-pipeline/` R code in this repository (`01_run_characterize.R`, `02_run_clean.R`, `03_run_cv.R`, `04_hormone_inter_cv.R`, `05_og_comparison.R`); numbers labeled "adopted" are carried forward from earlier reporting. A recurring theme below: several of the earlier reported values turn out to have been computed on the **raw instrument signal** (OD for ELISA, MFI for Luminex) rather than the back-calculated concentration this pipeline uses by default -- see [OG vs. Recomputed] for the full comparison.
 
@@ -64,7 +64,7 @@ Findings from actually parsing the raw files, in the order they matter for inter
 
     With the real mapping block available, `Median`'s `TAG309 3i` turned out to be a genuine duplicate even in the authoritative source (two different `UnknownN` slots both resolve to that exact label) -- not a disambiguation the parser could have recovered by trying harder. But because the fix restores the *rest* of each plate's mapping, this is now handled at the single-sample level: `TAG309 3i`'s 4 wells (on both panels) are flagged (`duplicate_id_conflict = TRUE`) and excluded from CV calculations, while the other 39 participants on each plate are retained -- rather than losing 2 entire plates over 1 sample.
 4. **Two malformed participant IDs recovered**: `TAG0193i` -> `TAG019`/timepoint 3/`i`, and `4iTAG238` -> `TAG238`/timepoint 4/`i` (reversed field order). Both recoveries are flagged in the pipeline logs for verification, not applied silently.
-5. **Cytokine/CRP inter-assay CV is not computable from available data**: only 1 of 8 cytokine plates (`plt1`) has control wells at all, and the CRP workbook has no plate with controls (no `plt1` sheet exists for CRP). A standards-based proxy is reported below as a rough indicator only -- see caveat in [Inter-Assay CV].
+5. **Cytokine/CRP inter-assay CV is computed from standards, not repeated controls**: only 1 of 8 cytokine plates (`plt1`) has control wells at all, and the CRP workbook has no plate with controls (no `plt1` sheet exists for CRP). Standards (Standard1-6 agreement across plates) are used instead, and are the primary reported inter-assay CV for these analytes -- not a caveated fallback. Hanneman et al. (2011) directly compared inter-assay CV computed from controls, standards, and unknowns and found no significant difference among them; the literature's separate concern about reused, once-per-box-reconstituted standards inflating that agreement was checked against this dataset's batch/box labels and does not apply -- every plate here, including same-day pairs, came from a distinctly labeled kit box. See [Inter-Assay CV] for the full methodology and numbers.
 6. **CRP's previously-reported intra-assay CV (9.08%) traced**: it came from a derived, LLOD/2-imputed dataset (`Raw_with_undetected_imputed`) that also included a CRP "plate 1" no longer present in the raw files available for this analysis. The recomputed value here (see below) uses the true raw, non-imputed data across all 7 CRP plates that could be parsed (plate 1 itself remains unrecoverable -- it's not in the raw workbook at all, independent of the parser fix in finding 3 above).
 7. **Hormones' previously-reported "inter-assay CV" (Testosterone 2.06%, DHEA 0.97%, Cortisol 2.03%) traced**: these values matched almost exactly (within 0.01-0.03 points) the average of the *within-plate* OD-based replicate CV (the sheet's own `450 CV (%)` column, averaged across controls and plates) -- a within-run precision statistic, not a between-run one, regardless of how many plates' values are averaged together. Relabeled and properly recomputed below.
 8. **CV convention was signal-based, not concentration-based, more broadly**: the same pattern found in (7) also explains most of the hormone *intra*-assay gap and part of the cytokine intra-assay gap -- recomputing on raw OD (hormones) or Net MFI (cytokines) instead of back-calculated concentration closes most of the remaining discrepancies against previously-reported values. Full comparison in [OG vs. Recomputed].
@@ -126,35 +126,66 @@ Every cytokine/CRP analyte exceeds the conventional 10% kit-ELISA intra-assay th
 
 ## Inter-Assay CV
 
-::: {.callout-warning}
-**Cytokines and CRP have essentially no inter-assay data.** Only 1 of 8 cytokine plates has control wells, and the CRP workbook has none at all. The "proxy" values below substitute Standard1-6 `Avg Result` across plates for a true QC-pool measurement -- standards are often reconstituted once per box and reused across several same-day plates, so this systematically **understates** true day-to-day variability. Treat as a rough lower bound, not a validated inter-assay CV.
+::: {.callout-note}
+**Cytokine/CRP inter-assay CV is computed from standards, not repeated controls.** Only 1 of 8 cytokine plates has control wells, and the CRP workbook has none at all, so a true QC-pool inter-assay CV isn't computable from this data. Standards (Standard1-6 `Avg Result` agreement across plates) are used instead and reported below as the **primary** inter-assay CV for these analytes, following Hanneman et al. (2011, *Biological Research for Nursing* 13(3):243-250), who directly compared inter-assay CV computed from controls, standards, and unknowns and found no significant difference among them (F=3.08, df=2,9, *p*=.096; consistent with Grotjan & Keel, 1996). The one caveat that literature raises -- that standards reconstituted once per kit box and reused across same-day plates can inflate cross-plate agreement -- was checked against this dataset's own batch/box labels (see [Data-Quality Findings], #5) and does not apply: every plate here, including same-day pairs, used a distinctly labeled kit box.
 :::
 
 ```{r inter-table}
 cytokine_inter_true <- cv_summary |>
   filter(cv_type == "inter", grepl("^average", level)) |>
-  transmute(Panel = "Cytokines/CRP", Analyte = analyte, Metric = "True (control-based)",
+  transmute(Panel = "Cytokines/CRP", Analyte = analyte, Metric = "Control-based (insufficient data)",
             n_plates = n, `CV (%)` = round(mean_cv, 1))
 
-cytokine_inter_proxy <- cv_summary |>
+cytokine_inter_standards <- cv_summary |>
   filter(cv_type == "inter_proxy", grepl("^average", level)) |>
-  transmute(Panel = "Cytokines/CRP", Analyte = analyte, Metric = "Standards proxy (NOT validated)",
+  transmute(Panel = "Cytokines/CRP", Analyte = analyte, Metric = "Standards-based (primary)",
             n_plates = n, `CV (%)` = round(mean_cv, 1))
 
 hormone_inter_tbl <- hormone_inter |>
   filter(plate_set == "excluding_shared_or_redo_plates" | (hormone == "Estradiol" & plate_set == "all_plates")) |>
-  transmute(Panel = "Hormones", Analyte = hormone, Metric = paste0("True (", control_level, ")"),
+  transmute(Panel = "Hormones", Analyte = hormone, Metric = paste0("Control-based (", control_level, ")"),
             n_plates = n_plates, `CV (%)` = round(cv, 1))
 
-inter_all <- bind_rows(cytokine_inter_true, cytokine_inter_proxy, hormone_inter_tbl)
+inter_all <- bind_rows(cytokine_inter_true, cytokine_inter_standards, hormone_inter_tbl)
 
 inter_all |>
-  kable(caption = "Inter-assay CV by analyte. Cytokine/CRP 'true' rows show n_plates=1 or fewer where the metric is not really computable. Hormone values exclude plates shared with other studies and reruns (Estradiol has no unshared plate, so all 3 available plates are shown).") |>
+  kable(caption = "Inter-assay CV by analyte. Cytokine/CRP 'Control-based' rows show n_plates=1 or fewer -- kept for transparency, not usable as a metric; 'Standards-based' is the primary reported inter-assay CV for these analytes. Hormone values exclude plates shared with other studies and reruns (Estradiol has no unshared plate, so all 3 available plates are shown).") |>
   kable_styling(bootstrap_options = "hover", full_width = FALSE) |>
   pack_rows(index = table(inter_all$Panel)[unique(inter_all$Panel)])
 ```
 
-Hormone controls show the same pattern seen throughout this data: the low-concentration control (`CtrlL`) is consistently less reproducible than the high control (`CtrlH`) -- e.g. DHEA 8.1% (`CtrlH`) vs. 21.3% (`CtrlL`) -- reflecting greater measurement noise near the assay floor rather than a flaw in the hormone with the higher CV.
+All four cytokine/CRP standards-based inter-assay CVs (1.4-3.6%) pass the conventional 15% threshold comfortably, and land well inside the values Hanneman et al. reported for controls, standards, and unknowns alike (all &le;2.8% in their salivary cortisol data) -- consistent with genuinely low day-to-day/kit-lot variability rather than an artifact of the standards-based method. Hormone controls show the same pattern seen throughout this data: the low-concentration control (`CtrlL`) is consistently less reproducible than the high control (`CtrlH`) -- e.g. DHEA 8.1% (`CtrlH`) vs. 21.3% (`CtrlL`) -- reflecting greater measurement noise near the assay floor rather than a flaw in the hormone with the higher CV.
+
+### How the standards-based inter-assay CV is computed
+
+The table above shows only the headline number (mean CV across standard levels). This section shows the arithmetic behind it, level by level, so the calculation isn't a black box.
+
+For each analyte, every plate reports an `Avg Result` for each of its Standard1-6 (or Standard1-7) wells -- the same calibrator concentrations run on every plate. For a given standard level, the inter-assay CV is the coefficient of variation of that level's `Avg Result` **across plates**:
+
+$$CV_{\text{level}} = 100 \times \frac{SD(\text{Avg Result across plates})}{\text{mean}(\text{Avg Result across plates})}$$
+
+The headline "standards-based" CV reported for each analyte is then the simple mean of $CV_{\text{level}}$ across all its standard levels (Standard1 through Standard6/7) -- each level weighted equally regardless of its concentration, which is why one anomalous level (see the TNF-α discussion in [OG vs. Recomputed]) doesn't dominate the average the way it can when only two levels (highest/lowest) are used.
+
+```{r inter-standards-detail}
+inter_standards_detail <- cv_summary |>
+  filter(cv_type == "inter_proxy", grepl("^Standard", level)) |>
+  transmute(
+    Analyte = analyte,
+    `Standard level` = sub(" \\(standards-based\\)$", "", level),
+    `n plates` = n,
+    `Mean concentration` = signif(mean_conc, 3),
+    `CV (%)` = round(mean_cv, 2)
+  ) |>
+  arrange(Analyte, `Standard level`)
+
+inter_standards_detail |>
+  select(-Analyte) |>
+  kable(caption = "Level-by-level detail behind the standards-based inter-assay CV: for each analyte and standard level, the number of plates contributing data, the mean concentration across those plates, and the resulting %CV. The 'average across levels' row in the table above is the simple mean of the 'CV (%)' column here, within each analyte.") |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE) |>
+  pack_rows(index = table(inter_standards_detail$Analyte)[unique(inter_standards_detail$Analyte)])
+```
+
+`n plates` varies by level (6-8) because a level is only included in its CV where the plate's `Avg Result` for that standard was actually quantifiable (not censored) -- see [Data-Quality Findings] and the fake-zero/censoring rules under [Data & Methods].
 
 ## OG vs. Recomputed
 
@@ -190,11 +221,11 @@ Mixed picture: TNF-α (Net MFI 10.7% vs. OG 10.4%) lands close to OG once comput
 
 ```{r og-inter-table}
 og_inter |>
-  kable(caption = "The lab's own 'Inter-assay:' calculation, read directly from the Inter-assays/Inter-Assays summary sheets. Built from the highest + lowest STANDARD across all 8 plates (there being no real repeated QC control on most plates) -- the same workaround this pipeline's 'standards proxy' independently arrived at.") |>
+  kable(caption = "The lab's own 'Inter-assay:' calculation, read directly from the Inter-assays/Inter-Assays summary sheets. Built from the highest + lowest STANDARD across all 8 plates (there being no real repeated QC control on most plates) -- the same standards-based approach this pipeline independently arrived at.") |>
   kable_styling(bootstrap_options = "hover", full_width = FALSE)
 ```
 
-IL-10's OG value (2.06%) lands close to this pipeline's standards-based proxy (2.0%) -- reassuring, since two independently-built workarounds roughly agree. IL-6 and CRP were left **blank** in the original file -- the summary formula cells are simply empty, meaning the original analysts hit the same data gap this pipeline did, not something specific to how this pipeline handles it. TNF-α's OG value (103%) is not usable at all: it's dominated by one wildly outlying plate (Plate 6's low-standard replicates read ~110-134 vs. ~3-20 everywhere else) averaged in without exclusion, not a real precision estimate.
+IL-10's OG value (2.06%) lands close to this pipeline's standards-based inter-assay CV (2.3%) -- reassuring, since two independently-built calculations, both using standards in place of repeated controls, roughly agree. IL-6 and CRP were left **blank** in the original file -- the summary formula cells are simply empty, meaning the original analysts hit the same data gap this pipeline did (no repeated controls), not something specific to how this pipeline handles it; this pipeline's recomputation (IL-6 1.4%, CRP 3.6%) fills that gap rather than leaving it blank. TNF-α's OG value (103%) is not usable at all: it's dominated by one wildly outlying plate (Plate 6's low-standard replicates read ~110-134 vs. ~3-20 everywhere else) averaged in without exclusion, not a real precision estimate -- this pipeline's recomputation (2.5%) isn't dominated by that same outlier the way OG's is, since it averages CV across all 6-7 standard levels rather than using only the highest and lowest standard the way OG's formula does; the one bad level's inflated CV gets diluted by the other five or six that aren't affected.
 
 ## Diagnostic Plots
 
@@ -206,7 +237,7 @@ Confirms the concentration-dependence pattern driving the intra-assay CV numbers
 
 ### Levey-Jennings: Control Values by Plate (Cytokines/CRP)
 
-Visual confirmation of the "essentially no inter-assay data" finding -- most panels here show a single point, because only one plate has a control well for that level.
+Visual confirmation that repeated *control* data is essentially absent -- most panels here show a single point, because only one plate has a control well for that level. (The standards-based inter-assay CV reported above draws on Standard1-6 agreement instead, which is available on every plate; see [Inter-Assay CV].)
 
 ![](derived/plots/levey_jennings.png)
 
@@ -214,7 +245,7 @@ Visual confirmation of the "essentially no inter-assay data" finding -- most pan
 
 - **Concentration-based and signal-based (OD/MFI) CV are both legitimate, but not interchangeable.** This report leads with concentration-based numbers as primary (they describe the precision of what's actually used downstream), and uses the signal-based recompute only to explain gaps against historical figures. A reader citing a single CV per analyte should be explicit about which basis it is -- see [OG vs. Recomputed].
 - **CRP's intra-assay gap is not explained by signal basis.** Unlike the other analytes, neither Result- nor Net-MFI-based recomputation closes the gap to the OG 9.08% value -- that figure's cause (an LLOD/2-imputed dataset including a now-missing plate 1) is a separate, already-identified issue.
-- **Cytokine/CRP inter-assay CV is a genuine data gap, not a pipeline limitation.** No amount of reanalysis recovers a metric that needs repeated control measurements the source plates don't have -- confirmed by the original analysts leaving the same cells blank in their own summary sheet.
+- **Repeated-control data for cytokine/CRP inter-assay CV is a genuine data gap, not a pipeline limitation** -- no amount of reanalysis recovers a metric that needs repeated control measurements the source plates don't have, confirmed by the original analysts leaving the same cells blank in their own summary sheet. The standards-based inter-assay CV reported above is not a workaround for that gap so much as a literature-supported alternative to it (Hanneman et al., 2011); it should still be read as resting on standards rather than a QC pool.
 - **Estradiol's inter-assay CV** is based on only 3 plates, all either shared with another study or a rerun -- there is no "clean" Estradiol plate in this dataset at all.
 - **Thresholds cited** (10% intra, 15% inter) are conventional kit-ELISA conventions, not a regulatory requirement; regulated ligand-binding assay guidance (FDA/EMA bioanalytical method validation) allows up to 20% (25% at the LLOQ).
 

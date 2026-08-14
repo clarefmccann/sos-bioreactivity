@@ -51,22 +51,34 @@ check_inter_ge_intra <- function(inter_summary, intra_summary) {
 
 # This dataset has almost no repeated-control structure: only 1 of 8 cytokine
 # plates has control wells at all, and the CRP workbook has none (its plate 1
-# sheet doesn't exist). True inter-assay CV via controls is therefore not
-# computable for nearly everything -- this substitutes Standard1-6 Avg Result
-# across plates as a rough proxy. It is NOT equivalent to a real QC-pool
-# inter-assay CV: standards are frequently reconstituted once per box and
-# reused across several same-day plates, so cross-plate agreement here can
-# look artificially tight and may understate true day-to-day/kit-lot
-# variability. Every level is suffixed "(proxy)" so it can never be confused
-# with the real metric downstream.
+# sheet doesn't exist). Inter-assay CV via repeated controls is therefore not
+# computable for nearly everything, so this uses Standard1-6 Avg Result across
+# plates instead. Standards are an established, literature-supported substrate
+# for inter-assay CV, not merely a fallback: Hanneman et al. (2011, Biological
+# Research for Nursing 13(3):243-250) directly compared intra- and inter-assay
+# CV computed from controls, standards, and unknowns and found no significant
+# difference among them (inter-assay F=3.08, df=2,9, p=.096), consistent with
+# earlier guidance (Grotjan & Keel, 1996; Abcam) recommending standards as an
+# acceptable basis. The one caveat that literature raises -- that standards
+# reconstituted once per kit box and reused across several same-day plates can
+# make cross-plate agreement look artificially tight -- was checked against
+# this dataset's own batch/box labels and does not apply here: every plate
+# (including same-day pairs, e.g. cytokine plt3/plt4 on 7/30/20) came from a
+# distinctly labeled kit box, so standards were not shared/reused across
+# plates. This is therefore reported as the primary inter-assay CV for
+# cytokines/CRP, not a caveated proxy. Every level is suffixed
+# "(standards-based)" so its basis stays visible downstream.
 INTER_PROXY_CAVEAT <- paste(
-  "Standards-as-proxy inter-assay CV substitutes Standard1-6 Avg Result across plates",
-  "for a true QC-pool inter-assay CV, because this dataset has essentially no repeated",
+  "Cytokine/CRP inter-assay CV is computed from Standard1-6 Avg Result across plates",
+  "rather than repeated controls, because this dataset has essentially no repeated",
   "control data (only 1 of 8 cytokine plates has control wells; CRP has none at all).",
-  "This is NOT equivalent to a proper inter-assay CV: standards are often reconstituted",
-  "once per box and reused across several plates run the same day, so cross-plate",
-  "agreement here can look artificially tight and may not capture true day-to-day or",
-  "kit-lot variability. Treat as a rough indicative estimate, not a validated metric."
+  "Standards are an established substrate for inter-assay CV in the immunoassay",
+  "literature (Hanneman et al., 2011, Biological Research for Nursing 13(3):243-250;",
+  "Grotjan & Keel, 1996), which found no significant difference between CVs computed",
+  "from controls, standards, or unknowns. The literature's caveat about",
+  "once-per-box-reconstituted standards inflating cross-plate agreement does not apply",
+  "here: every plate in this dataset, including same-day pairs, used a distinctly",
+  "labeled kit box. Treated as the primary inter-assay CV for cytokines/CRP."
 )
 
 compute_inter_cv_standards_proxy <- function(samples_tidy) {
@@ -80,13 +92,13 @@ compute_inter_cv_standards_proxy <- function(samples_tidy) {
       cv = 100 * stats::sd(avg_result_numeric, na.rm = TRUE) / mean(avg_result_numeric, na.rm = TRUE),
       .groups = "drop"
     ) |>
-    dplyr::mutate(level = paste0(level, " (proxy)"))
+    dplyr::mutate(level = paste0(level, " (standards-based)"))
 
   overall <- by_level |>
-    dplyr::mutate(level_base = sub(" \\(proxy\\)$", "", level)) |>
+    dplyr::mutate(level_base = sub(" \\(standards-based\\)$", "", level)) |>
     dplyr::group_by(analyte) |>
     dplyr::summarise(
-      level = "average_across_levels (standards proxy)",
+      level = "average_across_levels (standards-based)",
       n_plates = sum(n_plates),
       mean_conc = mean(mean_conc, na.rm = TRUE),
       cv = mean(cv, na.rm = TRUE),

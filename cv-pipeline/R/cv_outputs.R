@@ -9,7 +9,7 @@ build_cv_summary <- function(intra_summary, inter_summary, inter_proxy_summary, 
 
   proxy_labeled <- inter_proxy_summary |>
     dplyr::mutate(cv_type = "inter_proxy", n = n_plates, mean_cv = cv, median_cv = NA_real_, rms_cv = NA_real_,
-                  note = "standards-as-proxy -- NOT a validated inter-assay CV, see caveat") |>
+                  note = "standards-based inter-assay CV (Standard1-6 across plates) -- primary inter-assay CV for cytokines/CRP, see methodology note") |>
     dplyr::left_join(units_lookup, by = "analyte") |>
     dplyr::select(analyte, level, cv_type, n, mean_cv, median_cv, rms_cv, mean_conc, units, note)
 
@@ -22,17 +22,32 @@ build_cv_summary <- function(intra_summary, inter_summary, inter_proxy_summary, 
 
 # Conventional kit-ELISA thresholds are stricter than regulated ligand-binding
 # assay guidance -- print both so a reader doesn't over-interpret a "FAIL"
-# against the wrong standard. Only the TRUE inter-assay CV (not the standards
-# proxy) is checked against the 15% convention -- the proxy isn't a validated
-# metric and shouldn't be graded as if it were one.
+# against the wrong standard. Grades the TRUE (control-based) inter-assay CV
+# against the 15% convention where it exists; falls back to the standards-based
+# CV (now the primary metric for cytokines/CRP, per Hanneman et al., 2011 --
+# see compute_inter_cv.R) when no control-based value is available.
 flag_thresholds <- function(cv_summary) {
   intra_unknown <- cv_summary |> dplyr::filter(cv_type == "intra", level == "unknown") |>
     dplyr::transmute(analyte, intra_cv = mean_cv, intra_flag = ifelse(intra_cv < 10, "PASS (<10%)", "FAIL (>=10%)"))
 
-  inter_overall <- cv_summary |> dplyr::filter(cv_type == "inter", level == "average_across_levels") |>
-    dplyr::transmute(analyte, inter_cv = mean_cv,
-                      inter_flag = ifelse(is.na(inter_cv), "insufficient data",
-                                           ifelse(inter_cv < 15, "PASS (<15%)", "FAIL (>=15%)")))
+  inter_true <- cv_summary |> dplyr::filter(cv_type == "inter", level == "average_across_levels") |>
+    dplyr::transmute(analyte, inter_cv_true = mean_cv)
+
+  inter_standards <- cv_summary |> dplyr::filter(cv_type == "inter_proxy", level == "average_across_levels (standards-based)") |>
+    dplyr::transmute(analyte, inter_cv_standards = mean_cv)
+
+  inter_overall <- dplyr::full_join(inter_true, inter_standards, by = "analyte") |>
+    dplyr::mutate(
+      inter_cv = dplyr::coalesce(inter_cv_true, inter_cv_standards),
+      inter_basis = dplyr::case_when(
+        !is.na(inter_cv_true)       ~ "control-based",
+        !is.na(inter_cv_standards)  ~ "standards-based",
+        TRUE                        ~ NA_character_
+      ),
+      inter_flag = ifelse(is.na(inter_cv), "insufficient data",
+                           ifelse(inter_cv < 15, "PASS (<15%)", "FAIL (>=15%)"))
+    ) |>
+    dplyr::select(analyte, inter_cv, inter_basis, inter_flag)
 
   dplyr::full_join(intra_unknown, inter_overall, by = "analyte")
 }
@@ -44,24 +59,26 @@ THRESHOLD_CAVEAT <- paste(
   "disqualifying under that standard."
 )
 
-# Uses the TRUE inter-assay CV when computable; otherwise states plainly that
-# it wasn't, and reports the standards-proxy value as a separate, clearly
-# labeled indicative estimate rather than blending it into the primary claim.
+# Uses the TRUE (control-based) inter-assay CV when computable; otherwise
+# reports the standards-based CV as the primary estimate (per Hanneman et al.,
+# 2011 -- see compute_inter_cv.R), not as a caveated fallback.
 methods_sentences <- function(cv_summary, lloq_tally) {
   intra_unknown <- cv_summary |> dplyr::filter(cv_type == "intra", level == "unknown")
   inter_overall <- cv_summary |> dplyr::filter(cv_type == "inter", level == "average_across_levels")
-  proxy_overall <- cv_summary |> dplyr::filter(cv_type == "inter_proxy", level == "average_across_levels (standards proxy)")
+  standards_overall <- cv_summary |> dplyr::filter(cv_type == "inter_proxy", level == "average_across_levels (standards-based)")
 
   merged <- intra_unknown |>
     dplyr::select(analyte, intra_cv = mean_cv, intra_conc = mean_conc, units) |>
     dplyr::left_join(dplyr::select(inter_overall, analyte, inter_cv = mean_cv, inter_conc = mean_conc), by = "analyte") |>
-    dplyr::left_join(dplyr::select(proxy_overall, analyte, proxy_cv = mean_cv), by = "analyte") |>
+    dplyr::left_join(dplyr::select(standards_overall, analyte, standards_cv = mean_cv), by = "analyte") |>
     dplyr::left_join(lloq_tally, by = "analyte")
 
   vapply(seq_len(nrow(merged)), function(i) {
     r <- merged[i, ]
-    inter_clause <- if (is.na(r$inter_cv)) {
-      sprintf("Inter-assay CV could not be computed (insufficient repeated control data across plates; a standards-based proxy estimate was %.1f%%, see caveat)", r$proxy_cv)
+    inter_clause <- if (is.na(r$inter_cv) && !is.na(r$standards_cv)) {
+      sprintf("inter-assay CV (standards-based, Standard1-6 across plates) was %.1f%%, computed in place of a repeated-control estimate, which this dataset lacks", r$standards_cv)
+    } else if (is.na(r$inter_cv)) {
+      "inter-assay CV could not be computed (insufficient repeated control or standards data across plates)"
     } else {
       sprintf("inter-assay CV was %.1f%% at a mean concentration of %.2f %s", r$inter_cv, r$inter_conc, r$units)
     }

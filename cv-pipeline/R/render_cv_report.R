@@ -29,7 +29,7 @@ render_cv_report <- function(cv_summary, thresholds, sentences, intra, inter, an
     "## Inter-assay CV -- plates excluded (control failed expected range)",
     knitr_table(inter$excluded_plates),
     "",
-    "## Inter-assay CV -- standards-as-proxy (see caveat)",
+    "## Inter-assay CV -- standards-based (primary for cytokines/CRP, see methodology note)",
     INTER_PROXY_CAVEAT,
     "",
     "## Inter >= intra sanity check",

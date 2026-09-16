@@ -239,7 +239,7 @@ sos_hormones_wide <- sos_hormones_panel |>
 
 ```{r peak-differences, echo=FALSE}
 run_peak_test <- function(peak_col, t1_col, data) {
-  t.test(data[[peak_col]], data[[t1_col]], alternative = "greater", paired = TRUE)
+  t.test(data[[peak_col]], data[[t1_col]], alternative = "two.sided", paired = TRUE)
 }
 
 peak_tests_raw <- list(
@@ -302,10 +302,10 @@ all_difference <- bio_all_difference |>
 
 ```{r hr-primary-ttests, echo=FALSE}
 hr_ttest_tbl <- list(
-  "Task vs. Resting" = t.test(hr_all_wide$Task, hr_all_wide$resting_avg, alternative = "greater", paired = TRUE),
-  "Self-Connected vs. Fixation-Cross" = t.test(pull_hr("Self-Connected"), pull_hr("Fixation-Cross"), alternative = "greater", paired = TRUE),
-  "Self-Connected vs. Self-Disconnected" = t.test(pull_hr("Self-Connected"), pull_hr("Self-Disconnected"), alternative = "greater", paired = TRUE),
-  "Self-Connected vs. Other" = t.test(pull_hr("Self-Connected"), pull_hr("Other"), alternative = "greater", paired = TRUE)
+  "Task vs. Resting" = t.test(hr_all_wide$Task, hr_all_wide$resting_avg, alternative = "two.sided", paired = TRUE),
+  "Self-Connected vs. Fixation-Cross" = t.test(pull_hr("Self-Connected"), pull_hr("Fixation-Cross"), alternative = "two.sided", paired = TRUE),
+  "Self-Connected vs. Self-Disconnected" = t.test(pull_hr("Self-Connected"), pull_hr("Self-Disconnected"), alternative = "two.sided", paired = TRUE),
+  "Self-Connected vs. Other" = t.test(pull_hr("Self-Connected"), pull_hr("Other"), alternative = "two.sided", paired = TRUE)
 ) |>
   map(broom::tidy) |>
   list_rbind(names_to = "comparison") |>
@@ -876,7 +876,7 @@ excluding participants for illness, bleeding gums, or smoking. Section 3b (Adjus
 primary models with physiological covariates entered directly. The Cross-Check subsection ties
 both sets of results together against the primary (unadjusted, full-sample) findings.*
 
-## Exclusionary
+## S1: Exclusionary
 
 *Participants flagged here (illness, bleeding gums, smoking) are excluded in the analyses below.*
 
@@ -1002,10 +1002,10 @@ sens_peak_tests |>
 
 ```{r sens-illness-hr-ttests}
 list(
-  "Task vs. Resting"                     = t.test(hr_all_wide_well$Task, hr_all_wide_well$resting_avg, alternative = "greater", paired = TRUE),
-  "Self-Connected vs. Fixation-Cross"    = t.test(pull_hr_well("Self-Connected"), pull_hr_well("Fixation-Cross"),    alternative = "greater", paired = TRUE),
-  "Self-Connected vs. Self-Disconnected" = t.test(pull_hr_well("Self-Connected"), pull_hr_well("Self-Disconnected"), alternative = "greater", paired = TRUE),
-  "Self-Connected vs. Other"             = t.test(pull_hr_well("Self-Connected"), pull_hr_well("Other"),            alternative = "greater", paired = TRUE)
+  "Task vs. Resting"                     = t.test(hr_all_wide_well$Task, hr_all_wide_well$resting_avg, alternative = "two.sided", paired = TRUE),
+  "Self-Connected vs. Fixation-Cross"    = t.test(pull_hr_well("Self-Connected"), pull_hr_well("Fixation-Cross"),    alternative = "two.sided", paired = TRUE),
+  "Self-Connected vs. Self-Disconnected" = t.test(pull_hr_well("Self-Connected"), pull_hr_well("Self-Disconnected"), alternative = "two.sided", paired = TRUE),
+  "Self-Connected vs. Other"             = t.test(pull_hr_well("Self-Connected"), pull_hr_well("Other"),            alternative = "two.sided", paired = TRUE)
 ) |>
   map(broom::tidy) |>
   list_rbind(names_to = "comparison") |>
@@ -1284,7 +1284,7 @@ plot_sig_corrplot(
 
 *X marks indicate non-significant correlations after FDR correction (p~FDR~ ≥ .05). FDR applied separately for each puberty/timing variable, across the 4 immune reactivity outcomes.*
 
-## Adjusted
+## S2: Covariate-Adjusted
 
 *Age, BMI, hours since waking, and (for CRP, DHEA, and Testosterone) flow rate are entered as
 covariates in the models below.*
@@ -1696,16 +1696,461 @@ cov_clauses_text <- if (nrow(cov_clauses) == 0)
 
 **Results.** After adjusting for age, BMI, hours since waking, and (for CRP, DHEA, and Testosterone) flow rate, the linear time term remained significant (FDR-corrected within immune markers and hormones separately) for `r n_lin_sig_cov` of 7 biomarkers (`r lin_sig_cov_text`), and the quadratic time term remained significant for `r n_quad_sig_cov` of 7 biomarkers (`r quad_sig_cov_text`). For comparison, the primary (unadjusted) analysis found the quadratic term significantly improved fit, FDR-corrected within immune markers and hormones separately, for `r n_lrt_sig` biomarker`r if (n_lrt_sig != 1) "s"``r if (n_lrt_sig > 0) paste0(" (", lrt_sig_names, ")")` (Hypothesis 1a); `r if (nchar(lrt_ns_names) > 0) paste0("the improvement was not significant for ", lrt_ns_names, ".")` `r n_covtrend_sig` of 7 biomarkers also showed a significant adjusted intercept (i.e., a non-zero model-implied level at the reference timepoint after accounting for these covariates): `r covtrend_sig_text`. Among the covariates themselves, `r cov_clauses_text`.
 
+## S3: AUCi-Based Reactivity
+
+*Rationale.* The peak-vs-T1 reactivity tests used throughout this supplement and the primary notebook take, for each biomarker and participant, whichever of T3/T4 is higher — a data-driven, per-person operationalization that could inflate apparent reactivity by selecting each individual's own maximum. As a sensitivity check, this section instead uses the area under the curve with respect to increase (AUCi; Pruessner et al., 2003), which summarizes the entire T1–T4 trajectory relative to baseline rather than any single timepoint. AUCi is computed from each participant's own sample-collection times using the trapezoid rule, matching the primary notebook's Aim 1c (continued) Sensitivity Analysis: AUCi section exactly, re-pointed at this notebook's own independently-built dataframes. One-sample two-tailed t-tests (against μ = 0) are used, matching the two-tailed convention used throughout both notebooks.
+
+```{r s3-auci-setup, echo=FALSE}
+# Individual-difference measures not otherwise loaded in this supplement --
+# BFNES (fear of negative evaluation) and CES-DC (depressive symptoms) totals
+# are needed here to rebuild the Aim 2/Aim 3 peak-vs-AUCi head-to-head tables
+# below. Definitions match the primary notebook (Aim 3a/3b) exactly.
+quest_raw_q <- read.csv(file.path(proj_path, "data", "SOS_questionnaire_data.csv"))
+
+dep <- read.csv(file.path(
+  data_path,
+  "SOS/SOS-study-monash/questionnaires/CESD_total.csv"
+)) |>
+  select(SampleID, CESD_total)
+
+bfnes <- quest_raw_q |>
+  select(SampleID = SID, starts_with("BFNES_")) |>
+  mutate(across(starts_with("BFNES_"), \(x) suppressWarnings(as.numeric(x)))) |>
+  mutate(
+    BFNES_2     = 6 - BFNES_2,   # reverse-scored items: 2, 4, 7
+    BFNES_4     = 6 - BFNES_4,   # BFNES_10 forward-scored in raw data (not reversed)
+    BFNES_7     = 6 - BFNES_7,
+    BFNES_total = rowSums(across(starts_with("BFNES_")), na.rm = FALSE)
+  ) |>
+  select(SampleID, BFNES_total)
+
+# AUCi, computed via the trapezoid rule -- identical formula to the primary
+# notebook. Elapsed times use this notebook's own (immune-panel-anchored)
+# saliva_timing columns (elapsed_i_T2-4), which are built the same way as the
+# primary notebook's elapsed_T2-4 (both derive from the X1i_start/X2i_start/...
+# sample-report columns) -- so this is the same clock, not a different one.
+compute_auci <- function(m1, m2, m3, m4, t2, t3, t4) {
+  (m1 + m2) / 2 * t2 +
+    (m2 + m3) / 2 * (t3 - t2) +
+    (m3 + m4) / 2 * (t4 - t3) -
+    m1 * t4
+}
+
+auci_data <- sos_crp_wide |>
+  select(SampleID, CRP_log_1, CRP_log_2, CRP_log_3, CRP_log_4) |>
+  full_join(
+    sos_cytokines_wide |>
+      select(SampleID,
+             IL10_log_1, IL10_log_2, IL10_log_3, IL10_log_4,
+             IL6_log_1, IL6_log_2, IL6_log_3, IL6_log_4,
+             TNFalpha_log_1, TNFalpha_log_2, TNFalpha_log_3, TNFalpha_log_4),
+    by = "SampleID"
+  ) |>
+  full_join(
+    sos_hormones_wide |>
+      select(SampleID,
+             DHEA_log_1, DHEA_log_2, DHEA_log_3, DHEA_log_4,
+             Testosterone_log_1, Testosterone_log_2, Testosterone_log_3, Testosterone_log_4,
+             Cortisol_log_1, Cortisol_log_2, Cortisol_log_3, Cortisol_log_4),
+    by = "SampleID"
+  ) |>
+  left_join(saliva_timing |> select(SampleID, elapsed_i_T2, elapsed_i_T3, elapsed_i_T4), by = "SampleID") |>
+  mutate(
+    crp_auci  = compute_auci(CRP_log_1, CRP_log_2, CRP_log_3, CRP_log_4,
+                              elapsed_i_T2, elapsed_i_T3, elapsed_i_T4),
+    il10_auci = compute_auci(IL10_log_1, IL10_log_2, IL10_log_3, IL10_log_4,
+                              elapsed_i_T2, elapsed_i_T3, elapsed_i_T4),
+    il6_auci  = compute_auci(IL6_log_1, IL6_log_2, IL6_log_3, IL6_log_4,
+                              elapsed_i_T2, elapsed_i_T3, elapsed_i_T4),
+    tnfa_auci = compute_auci(TNFalpha_log_1, TNFalpha_log_2, TNFalpha_log_3, TNFalpha_log_4,
+                              elapsed_i_T2, elapsed_i_T3, elapsed_i_T4),
+    dhea_auci = compute_auci(DHEA_log_1, DHEA_log_2, DHEA_log_3, DHEA_log_4,
+                              elapsed_i_T2, elapsed_i_T3, elapsed_i_T4),
+    test_auci = compute_auci(Testosterone_log_1, Testosterone_log_2, Testosterone_log_3, Testosterone_log_4,
+                              elapsed_i_T2, elapsed_i_T3, elapsed_i_T4),
+    cort_auci = compute_auci(Cortisol_log_1, Cortisol_log_2, Cortisol_log_3, Cortisol_log_4,
+                              elapsed_i_T2, elapsed_i_T3, elapsed_i_T4)
+  )
+
+run_auci_test <- function(col) t.test(auci_data[[col]], mu = 0, alternative = "two.sided")
+
+auci_tests_raw <- list(
+  crp  = run_auci_test("crp_auci"),
+  il10 = run_auci_test("il10_auci"),
+  il6  = run_auci_test("il6_auci"),
+  tnfa = run_auci_test("tnfa_auci"),
+  dhea = run_auci_test("dhea_auci"),
+  test = run_auci_test("test_auci"),
+  cort = run_auci_test("cort_auci")
+)
+auci_praw <- map_dbl(auci_tests_raw, \(t) t$p.value)
+auci_pfdr <- setNames(
+  c(
+    p.adjust(auci_praw[1:4], method = "fdr"),
+    p.adjust(auci_praw[5:7], method = "fdr")
+  ),
+  names(auci_praw)
+)
+
+auci_ttest_tbl <- auci_tests_raw |>
+  map(broom::tidy) |>
+  list_rbind(names_to = "biomarker") |>
+  mutate(
+    n = auci_tests_raw |> map_dbl(\(t) unname(t$parameter) + 1),
+    biomarker = case_match(
+      biomarker,
+      "crp" ~ "CRP", "il10" ~ "IL-10", "il6" ~ "IL-6", "tnfa" ~ "TNF-alpha",
+      "dhea" ~ "DHEA", "test" ~ "Testosterone", "cort" ~ "Cortisol"
+    )
+  ) |>
+  select(biomarker, n, estimate, statistic, parameter, p.value) |>
+  mutate(across(where(is.numeric), \(x) round(x, 3)))
+
+# AUCi-based counterpart to reactivity_vars/all_difference (already built
+# above for this notebook's own peak-based reactivity): HR and
+# subjective-stress columns are unchanged; only the 7 biomarker columns are
+# swapped for their AUCi equivalents.
+reactivity_vars_auci <- c(
+  "task_rs_hr_diff", "conn_dis_hr_diff", "conn_other_hr_diff", "conn_rest_hr_diff",
+  "crp_auci", "il10_auci", "il6_auci", "tnfa_auci",
+  "dhea_auci", "test_auci", "cort_auci",
+  "subj_scsd_difference", "subj_scother_difference"
+)
+
+all_difference_auci <- all_difference |>
+  select(SampleID, task_rs_hr_diff, conn_dis_hr_diff, conn_other_hr_diff, conn_rest_hr_diff,
+         subj_scsd_difference, subj_scother_difference) |>
+  left_join(
+    auci_data |> select(SampleID, crp_auci, il10_auci, il6_auci, tnfa_auci,
+                         dhea_auci, test_auci, cort_auci),
+    by = "SampleID"
+  )
+```
+
+### One-Sample AUCi Tests
+
+```{r s3-auci-table}
+auci_ttest_tbl |>
+  mutate(p.value = cell_spec(p.value, bold = p.value < 0.05,
+    color = if_else(p.value < 0.05, "#2166ac", "black"))) |>
+  kable(col.names = c("biomarker", "N", "Mean AUCi", "t", "df", "p (two-tailed)"), escape = FALSE) |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+```{r s3-auci-fdr}
+auci_fdr_tbl <- tibble(
+  group     = c(rep("Immune", 4), rep("Hormones", 3)),
+  biomarker = c("CRP", "IL-10", "IL-6", "TNF-alpha", "DHEA", "Testosterone", "Cortisol"),
+  n         = auci_ttest_tbl$n,
+  p_raw     = round(auci_praw, 6),
+  p_fdr     = auci_pfdr
+)
+
+auci_fdr_tbl |>
+  mutate(p_fdr = cell_spec(round(p_fdr, 4), bold = p_fdr < 0.05,
+    color = if_else(p_fdr < 0.05, "#2166ac", "black"))) |>
+  kable(col.names = c("Group", "biomarker", "N", "p (raw)", "p (FDR)"), escape = FALSE) |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
+```{r s3-auci-results-vals, echo=FALSE, include=FALSE}
+# AUCi is signed (unlike peak-minus-baseline, which only tests for an
+# increase), so "significant" must be split by direction here too, matching
+# the primary notebook's Aim 1c (continued) AUCi section.
+auci_signed <- auci_fdr_tbl |>
+  left_join(auci_ttest_tbl |> select(biomarker, estimate), by = "biomarker")
+
+sig_auci_increase <- auci_signed |> filter(p_fdr < 0.05, estimate > 0) |> pull(biomarker)
+sig_auci_decrease <- auci_signed |> filter(p_fdr < 0.05, estimate < 0) |> pull(biomarker)
+
+fmt_or_none <- function(x) if (length(x) == 0) "none" else paste(x, collapse = ", ")
+```
+
+**Results.** Using AUCi as an alternative, trajectory-based reactivity index, `r fmt_or_none(sig_auci_increase)` showed a significant net *increase* over baseline, and `r fmt_or_none(sig_auci_decrease)` showed a significant net *decrease* (FDR-corrected within immune markers and hormones separately). These match the primary notebook's Aim 1c (continued) AUCi results, computed here independently from this notebook's own dataframes as a self-containment check.
+
+### Pubertal Status & Timing × Reactivity: Peak vs. AUCi
+
+Same design as the primary notebook's Aim 2: bivariate Pearson correlations between each of the 13 reactivity outcomes and pubertal status (PUBcomp), age at menarche (centered), and PDS F5 perceived timing, FDR-corrected within each reactivity domain. The peak-based matrix is recomputed here (it is not otherwise built in this notebook) so it can be directly compared against the AUCi-based version.
+
+```{r s3-puberty-peak-corr, echo=FALSE}
+all_pub_mat <- timing_reactivity |>
+  select(all_of(c(all_pub_vars, reactivity_vars))) |>
+  as.matrix()
+colnames(all_pub_mat) <- c(all_pub_labels, reactivity_labels)
+
+all_pub_corrs <- rcorr(all_pub_mat)
+
+raw_allpub_mat <- all_pub_corrs$P[all_pub_labels, reactivity_labels, drop = FALSE]
+fdr_allpub_mat <- raw_allpub_mat
+for (pv in all_pub_labels) {
+  for (cols in list(hr_cols, imm_cols, horm_cols, subj_cols)) {
+    fdr_allpub_mat[pv, cols] <- p.adjust(raw_allpub_mat[pv, cols], method = "fdr")
+  }
+}
+r_mat <- all_pub_corrs$r[all_pub_labels, reactivity_labels, drop = FALSE]
+```
+
+```{r s3-puberty-auci-corr, echo=FALSE}
+timing_reactivity_auci <- all_difference_auci |>
+  left_join(timing_df, by = "SampleID")
+
+all_pub_mat_auci <- timing_reactivity_auci |>
+  select(all_of(c(all_pub_vars, reactivity_vars_auci))) |>
+  as.matrix()
+colnames(all_pub_mat_auci) <- c(all_pub_labels, reactivity_labels)
+
+all_pub_corrs_auci <- rcorr(all_pub_mat_auci)
+
+raw_allpub_mat_auci <- all_pub_corrs_auci$P[all_pub_labels, reactivity_labels, drop = FALSE]
+fdr_allpub_mat_auci <- raw_allpub_mat_auci
+for (pv in all_pub_labels) {
+  for (cols in list(hr_cols, imm_cols, horm_cols, subj_cols)) {
+    fdr_allpub_mat_auci[pv, cols] <- p.adjust(raw_allpub_mat_auci[pv, cols], method = "fdr")
+  }
+}
+r_mat_auci <- all_pub_corrs_auci$r[all_pub_labels, reactivity_labels, drop = FALSE]
+```
+
+```{r s3-puberty-head-to-head}
+# Restricted to the 7 biomarker-reactivity outcomes, since HR and subjective
+# stress are identical between the peak and AUCi matrices (only the biomarker
+# columns differ) and are not repeated here.
+peak_vs_auci_pub <- expand.grid(pv = all_pub_labels, rv = reactivity_labels[5:11],
+                                 stringsAsFactors = FALSE) |>
+  rowwise() |>
+  mutate(
+    r_peak     = round(r_mat[pv, rv], 3),
+    p_fdr_peak = round(fdr_allpub_mat[pv, rv], 4),
+    r_auci     = round(r_mat_auci[pv, rv], 3),
+    p_fdr_auci = round(fdr_allpub_mat_auci[pv, rv], 4)
+  ) |>
+  ungroup()
+
+peak_vs_auci_pub |>
+  mutate(across(c(p_fdr_peak, p_fdr_auci), \(x) cell_spec(
+    x, bold = !is.na(x) & x < 0.05, color = if_else(!is.na(x) & x < 0.05, "#2166ac", "black")
+  ))) |>
+  kable(escape = FALSE,
+        col.names = c("Predictor", "Reactivity outcome", "r (peak)", "p_FDR (peak)", "r (AUCi)", "p_FDR (AUCi)"),
+        caption = "Pubertal status/timing x biomarker reactivity: peak-based vs. AUCi-based (bold = p_FDR < .05)") |>
+  kable_styling(bootstrap_options = "hover")
+```
+
+```{r s3-puberty-index-dependent, echo=FALSE, include=FALSE}
+# "Index-dependent": significant under peak-based reactivity but not under
+# AUCi -- computed from the actual p-values each render, not hardcoded.
+pub_index_dependent <- peak_vs_auci_pub |>
+  filter(p_fdr_peak < 0.05, is.na(p_fdr_auci) | p_fdr_auci >= 0.05)
+pub_index_dependent_text <- if (nrow(pub_index_dependent) == 0) NULL else
+  paste(paste0(pub_index_dependent$pv, " × ", pub_index_dependent$rv), collapse = ", ")
+```
+
+**Results.** Full peak-vs-AUCi head-to-head values for all pubertal-status/timing × biomarker-reactivity pairs are shown above. `r if (!is.null(pub_index_dependent_text)) paste0("The association", if (nrow(pub_index_dependent) != 1) "s" else "", " between ", pub_index_dependent_text, " should be considered index-dependent: significant under peak-based reactivity but not under the AUCi-based sensitivity check.") else "No pair that was significant under peak-based reactivity lost significance under the AUCi-based sensitivity check."`
+
+### FNE (BFNES) × Reactivity: Peak vs. AUCi
+
+```{r s3-bfnes-corr, echo=FALSE}
+bfnes_reactivity <- all_difference |>
+  left_join(bfnes, by = "SampleID") |>
+  select(-SampleID) |>
+  na.omit()
+
+corr_domain <- function(reactivity_label) case_when(
+  str_detect(reactivity_label, "^ΔHR")                                    ~ "HR",
+  reactivity_label %in% c("ΔCRP", "ΔIL-10", "ΔIL-6", "ΔTNF-α")          ~ "Immune",
+  reactivity_label %in% c("ΔDHEA", "ΔTestosterone", "ΔCortisol")         ~ "Hormones",
+  TRUE                                                                    ~ "Subjective"
+)
+
+bfnes_react_corrs <- map_dfr(setNames(reactivity_vars, reactivity_labels), function(rv) {
+  ct <- cor.test(bfnes_reactivity[[rv]], bfnes_reactivity$BFNES_total)
+  tibble(r = round(unname(ct$estimate), 3), p_raw = ct$p.value)
+}, .id = "Reactivity") |>
+  mutate(domain = corr_domain(Reactivity)) |>
+  group_by(domain) |>
+  mutate(p_fdr = round(p.adjust(p_raw, method = "fdr"), 4)) |>
+  ungroup()
+
+bfnes_reactivity_auci <- all_difference_auci |>
+  left_join(bfnes, by = "SampleID") |>
+  select(-SampleID) |>
+  na.omit()
+
+bfnes_react_corrs_auci <- map_dfr(setNames(reactivity_vars_auci, reactivity_labels), function(rv) {
+  ct <- cor.test(bfnes_reactivity_auci[[rv]], bfnes_reactivity_auci$BFNES_total)
+  tibble(r = round(unname(ct$estimate), 3), p_raw = ct$p.value)
+}, .id = "Reactivity") |>
+  mutate(domain = corr_domain(Reactivity)) |>
+  group_by(domain) |>
+  mutate(p_fdr = round(p.adjust(p_raw, method = "fdr"), 4)) |>
+  ungroup()
+
+bfnes_peak_vs_auci <- bfnes_react_corrs |>
+  select(Reactivity, r_peak = r, p_fdr_peak = p_fdr) |>
+  left_join(bfnes_react_corrs_auci |> select(Reactivity, r_auci = r, p_fdr_auci = p_fdr), by = "Reactivity")
+
+bfnes_peak_vs_auci |>
+  mutate(across(c(p_fdr_peak, p_fdr_auci), \(x) cell_spec(
+    x, bold = !is.na(x) & x < 0.05, color = if_else(!is.na(x) & x < 0.05, "#2166ac", "black")
+  ))) |>
+  kable(escape = FALSE,
+        col.names = c("Reactivity outcome", "r (peak)", "p_FDR (peak)", "r (AUCi)", "p_FDR (AUCi)"),
+        caption = "BFNES x reactivity: peak-based vs. AUCi-based, all 13 outcomes (bold = p_FDR < .05)") |>
+  kable_styling(bootstrap_options = "hover")
+```
+
+```{r s3-bfnes-index-dependent, echo=FALSE, include=FALSE}
+bfnes_index_dependent <- bfnes_peak_vs_auci |>
+  filter(p_fdr_peak < 0.05, is.na(p_fdr_auci) | p_fdr_auci >= 0.05)
+bfnes_index_dependent_text <- if (nrow(bfnes_index_dependent) == 0) NULL else
+  paste(bfnes_index_dependent$Reactivity, collapse = ", ")
+```
+
+**Results.** Full peak-vs-AUCi head-to-head values for BFNES × all 13 reactivity outcomes are shown above. `r if (!is.null(bfnes_index_dependent_text)) paste0("The association", if (nrow(bfnes_index_dependent) != 1) "s" else "", " between BFNES and ", bfnes_index_dependent_text, " should be considered index-dependent: significant under peak-based reactivity but not under the AUCi-based sensitivity check.") else "No association that was significant under peak-based reactivity lost significance under the AUCi-based sensitivity check."`
+
+### CES-DC × Reactivity: Peak vs. AUCi
+
+```{r s3-dep-corr, echo=FALSE}
+dep_reactivity <- all_difference |>
+  left_join(dep, by = "SampleID") |>
+  select(-SampleID) |>
+  na.omit()
+
+dep_react_corrs <- map_dfr(setNames(reactivity_vars, reactivity_labels), function(rv) {
+  ct <- cor.test(dep_reactivity[[rv]], dep_reactivity$CESD_total)
+  tibble(r = round(unname(ct$estimate), 3), p_raw = ct$p.value)
+}, .id = "Reactivity") |>
+  mutate(domain = corr_domain(Reactivity)) |>
+  group_by(domain) |>
+  mutate(p_fdr = round(p.adjust(p_raw, method = "fdr"), 4)) |>
+  ungroup()
+
+dep_reactivity_auci <- all_difference_auci |>
+  left_join(dep, by = "SampleID") |>
+  select(-SampleID) |>
+  na.omit()
+
+dep_react_corrs_auci <- map_dfr(setNames(reactivity_vars_auci, reactivity_labels), function(rv) {
+  ct <- cor.test(dep_reactivity_auci[[rv]], dep_reactivity_auci$CESD_total)
+  tibble(r = round(unname(ct$estimate), 3), p_raw = ct$p.value)
+}, .id = "Reactivity") |>
+  mutate(domain = corr_domain(Reactivity)) |>
+  group_by(domain) |>
+  mutate(p_fdr = round(p.adjust(p_raw, method = "fdr"), 4)) |>
+  ungroup()
+
+dep_peak_vs_auci <- dep_react_corrs |>
+  select(Reactivity, r_peak = r, p_fdr_peak = p_fdr) |>
+  left_join(dep_react_corrs_auci |> select(Reactivity, r_auci = r, p_fdr_auci = p_fdr), by = "Reactivity")
+
+dep_peak_vs_auci |>
+  mutate(across(c(p_fdr_peak, p_fdr_auci), \(x) cell_spec(
+    x, bold = !is.na(x) & x < 0.05, color = if_else(!is.na(x) & x < 0.05, "#2166ac", "black")
+  ))) |>
+  kable(escape = FALSE,
+        col.names = c("Reactivity outcome", "r (peak)", "p_FDR (peak)", "r (AUCi)", "p_FDR (AUCi)"),
+        caption = "CES-DC x reactivity: peak-based vs. AUCi-based, all 13 outcomes (bold = p_FDR < .05; exploratory aim)") |>
+  kable_styling(bootstrap_options = "hover")
+```
+
+```{r s3-dep-index-dependent, echo=FALSE, include=FALSE}
+dep_index_dependent <- dep_peak_vs_auci |>
+  filter(p_fdr_peak < 0.05, is.na(p_fdr_auci) | p_fdr_auci >= 0.05)
+dep_index_dependent_text <- if (nrow(dep_index_dependent) == 0) NULL else
+  paste(dep_index_dependent$Reactivity, collapse = ", ")
+```
+
+**Results.** Full peak-vs-AUCi head-to-head values for CES-DC × all 13 reactivity outcomes (exploratory aim) are shown above. `r if (!is.null(dep_index_dependent_text)) paste0("The association", if (nrow(dep_index_dependent) != 1) "s" else "", " between CES-DC and ", dep_index_dependent_text, " should be considered index-dependent: significant under peak-based reactivity but not under the AUCi-based sensitivity check.") else "No association that was significant under peak-based reactivity lost significance under the AUCi-based sensitivity check."`
+
+## S4: Diurnal Rhythm Check
+
+*Rationale.* An AUCi decrease could reflect either a task-related suppression or ordinary diurnal decline over the session, since steroid hormones (cortisol, DHEA, testosterone) follow a circadian rhythm that immune markers do not share. Hours since waking, not session clock time, is the more appropriate basis for this check, since the circadian decline is anchored to each person's own wake time rather than the shared clock; session start time is examined alongside it as a secondary, less-missing-data cross-check. This matches the primary notebook's Diurnal Rhythm Check exactly, re-pointed at this notebook's own `auci_data` (S3 above) and its own pre-existing `wake_time`/`hours_since_wake` (built in the setup chunk for the covariate-adjusted trend models above) and `saliva_timing$t1i_min`.
+
+```{r s4-diurnal-check}
+auci_diurnal_data <- auci_data |>
+  left_join(saliva_timing |> select(SampleID, t1i_min), by = "SampleID") |>
+  left_join(wake_time |> select(SampleID, hours_since_wake), by = "SampleID")
+
+auci_diurnal_vars <- c(
+  cort_auci = "Cortisol", dhea_auci = "DHEA", test_auci = "Testosterone",
+  crp_auci = "CRP", il6_auci = "IL-6", il10_auci = "IL-10", tnfa_auci = "TNF-alpha"
+)
+
+cor_or_na <- function(x, y) {
+  dat <- na.omit(data.frame(x, y))
+  if (nrow(dat) < 3) return(list(n = nrow(dat), r = NA_real_, p = NA_real_))
+  ct <- cor.test(dat$x, dat$y)
+  list(n = nrow(dat), r = round(unname(ct$estimate), 3), p = round(ct$p.value, 4))
+}
+
+auci_diurnal_tbl <- imap_dfr(auci_diurnal_vars, function(label, col) {
+  wake_res  <- cor_or_na(auci_diurnal_data$hours_since_wake, auci_diurnal_data[[col]])
+  clock_res <- cor_or_na(auci_diurnal_data$t1i_min,          auci_diurnal_data[[col]])
+  tibble(
+    Biomarker = label,
+    Group     = if_else(label %in% c("Cortisol", "DHEA", "Testosterone"),
+                         "Hormones (circadian rhythm)", "Immune (no circadian rhythm)"),
+    n_wake    = wake_res$n,  r_wake  = wake_res$r,  p_wake  = wake_res$p,
+    n_clock   = clock_res$n, r_clock = clock_res$r, p_clock = clock_res$p
+  )
+}, .id = "var") |>
+  select(-var)
+
+fmt_time_range <- function(x) {
+  x <- x[!is.na(x)]
+  paste0(
+    sprintf("N = %d; mean %02d:%02d; range %02d:%02d",
+            length(x),
+            floor(mean(x) / 60), round(mean(x) %% 60),
+            floor(min(x) / 60),  round(min(x) %% 60)),
+    "-",
+    sprintf("%02d:%02d", floor(max(x) / 60), round(max(x) %% 60))
+  )
+}
+session_start_summary <- fmt_time_range(auci_diurnal_data$t1i_min)
+hours_wake_valid <- auci_diurnal_data$hours_since_wake[!is.na(auci_diurnal_data$hours_since_wake)]
+hours_wake_summary <- paste0(
+  sprintf("N = %d; mean %.1fh; range %.1f", length(hours_wake_valid), mean(hours_wake_valid), min(hours_wake_valid)),
+  "-",
+  sprintf("%.1fh", max(hours_wake_valid))
+)
+
+auci_diurnal_tbl |>
+  mutate(
+    p_wake  = cell_spec(p_wake,  bold = p_wake  < 0.05, color = if_else(p_wake  < 0.05, "#2166ac", "black")),
+    p_clock = cell_spec(p_clock, bold = p_clock < 0.05, color = if_else(p_clock < 0.05, "#2166ac", "black"))
+  ) |>
+  kable(col.names = c("Biomarker", "Group", "n (wake)", "r (wake)", "p (wake)",
+                       "n (clock)", "r (clock)", "p (clock)"),
+        escape = FALSE,
+        caption = paste0("Correlation between AUCi and (a) hours since waking, (b) session start time, by biomarker. Hours since waking: ",
+                          hours_wake_summary, ". Session start time: ", session_start_summary, ".")) |>
+  kable_styling(bootstrap_options = "hover")
+```
+
+```{r s4-diurnal-results-vals, echo=FALSE, include=FALSE}
+sig_diurnal_wake_hormones <- auci_diurnal_tbl |>
+  filter(Group == "Hormones (circadian rhythm)", p_wake < 0.05) |> pull(Biomarker)
+sig_diurnal_wake_immune <- auci_diurnal_tbl |>
+  filter(Group == "Immune (no circadian rhythm)", p_wake < 0.05) |> pull(Biomarker)
+sig_diurnal_clock_hormones <- auci_diurnal_tbl |>
+  filter(Group == "Hormones (circadian rhythm)", p_clock < 0.05) |> pull(Biomarker)
+```
+
+**Results.** Hours since waking (`r hours_wake_summary`) was significantly correlated with AUCi for `r fmt_or_none(sig_diurnal_wake_hormones)` — of the three steroid hormones with a known circadian rhythm — with more time since waking associated with more negative AUCi. `r if (length(sig_diurnal_wake_immune) == 0) "No immune marker" else fmt_or_none(sig_diurnal_wake_immune)` showed this relationship. Session start time (`r session_start_summary`) showed the same pattern for `r fmt_or_none(sig_diurnal_clock_hormones)`. This is consistent with normal diurnal decline contributing to the cortisol AUCi decrease reported in S3, rather than a task-specific suppression effect, matching the primary notebook's Diurnal Rhythm Check conclusion.
+
+*Note on scope.* This check is correlation-only, matching the primary notebook. A covariate-adjusted version — testing the AUCi one-sample intercepts (S3 above) in a regression model that includes hours-since-waking as a covariate, rather than as a separate bivariate correlation — has not been implemented in either notebook; it would be new computation beyond re-narrating existing analyses, and is noted here rather than silently added.
+
 ## Cross-Check
 
 ### Sensitivity Analysis Cross-Check
 
-A single table summarising whether each biomarker's reactivity result holds across all sensitivity analyses. **Biomarker reactivity** (peak − T1) is flagged as significant (✓) when p (FDR-corrected within immune / hormone family) < .05 for the primary and exclusion analyses. **HR comparisons** are flagged when the one-tailed paired t-test p < .05 (not FDR-corrected, matching the primary HR analysis, which is not part of a multi-test biomarker family). (BMI's correlation with biomarker reactivity is reported separately above and is not folded into this consistency check, since it tests a different question — whether BMI relates to reactivity magnitude, not whether reactivity itself is significant.)
+A single table summarising whether each biomarker's reactivity result holds across all sensitivity analyses. **Biomarker reactivity** (peak − T1) is flagged as significant (✓) when p (FDR-corrected within immune / hormone family) < .05 for the primary and exclusion analyses. **HR comparisons** are flagged when the two-tailed paired t-test p < .05 (not FDR-corrected, matching the primary HR analysis, which is not part of a multi-test biomarker family). (BMI's correlation with biomarker reactivity is reported separately above and is not folded into this consistency check, since it tests a different question — whether BMI relates to reactivity magnitude, not whether reactivity itself is significant.)
 
 ```{r sens-crosscheck, echo=FALSE}
 biomarker_ref <- tibble(
   key     = c("crp",  "il10",  "il6",  "tnfa",  "dhea",  "test",          "cort"),
-  biomarker = c("CRP",  "IL-10", "IL-6", "TNF-α", "DHEA",  "Testosterone",  "Cortisol"),
+  biomarker = c("CRP",  "IL-10", "IL-6", "TNF-alpha", "DHEA",  "Testosterone",  "Cortisol"),
   group   = c(rep("Immune", 4), rep("Hormones", 3)),
   outcome_immune  = c("crp_difference", "il10_difference", "il6_difference",
                        "tnfa_difference", NA, NA, NA),
@@ -1777,14 +2222,14 @@ bio_cross |>
 ```{r sens-crosscheck-hr, echo=FALSE}
 hr_ill_tbl <- list(
   "Task vs. Resting"                     = t.test(hr_all_wide_well$Task, hr_all_wide_well$resting_avg,
-                                                   alternative = "greater", paired = TRUE),
+                                                   alternative = "two.sided", paired = TRUE),
   "Self-Connected vs. Fixation-Cross"    = t.test(pull_hr_well("Self-Connected"), pull_hr_well("Fixation-Cross"),
-                                                   alternative = "greater", paired = TRUE),
+                                                   alternative = "two.sided", paired = TRUE),
   "Self-Connected vs. Self-Disconnected" = t.test(pull_hr_well("Self-Connected"),
                                                    pull_hr_well("Self-Disconnected"),
-                                                   alternative = "greater", paired = TRUE),
+                                                   alternative = "two.sided", paired = TRUE),
   "Self-Connected vs. Other"             = t.test(pull_hr_well("Self-Connected"), pull_hr_well("Other"),
-                                                   alternative = "greater", paired = TRUE)
+                                                   alternative = "two.sided", paired = TRUE)
 ) |>
   map(broom::tidy) |>
   list_rbind(names_to = "Comparison") |>
@@ -1833,9 +2278,26 @@ n_all_ns  <- sum(bio_cross_raw$n_sig == 0)
 n_mixed   <- nrow(bio_cross_raw) - n_all_sig - n_all_ns
 all_sig_biomarkers <- bio_cross_raw |> filter(n_sig == 3) |> pull(biomarker) |> paste(collapse = ", ")
 mixed_biomarkers   <- bio_cross_raw |> filter(n_sig > 0 & n_sig < 3) |> pull(biomarker) |> paste(collapse = ", ")
+
+# One-sentence, per-biomarker explanation of what "Mixed" means -- which
+# specific analyses were/weren't significant -- computed from the actual
+# p-values each render rather than hardcoded to whichever biomarker is
+# currently mixed.
+mixed_detail <- bio_cross_raw |>
+  filter(n_sig > 0 & n_sig < 3) |>
+  rowwise() |>
+  mutate(
+    sig_in = paste(c("primary", "illness-excluded", "bleed+smoke-excluded")[c(p_primary, p_ill, p_clean) < .05], collapse = " and "),
+    ns_in  = paste(c("primary", "illness-excluded", "bleed+smoke-excluded")[c(p_primary, p_ill, p_clean) >= .05], collapse = " and "),
+    detail = paste0(biomarker, " was significant in the ", sig_in, " analys", if_else(str_detect(sig_in, " and "), "es", "is"),
+                     " but not in the ", ns_in, " analys", if_else(str_detect(ns_in, " and "), "es", "is"))
+  ) |>
+  ungroup() |>
+  pull(detail) |>
+  paste(collapse = "; ")
 ```
 
-**Results.** Of the 7 biomarkers, `r n_all_sig` showed consistent significant reactivity across all three analyses (primary, illness-excluded, and bleed+smoke-excluded)`r if (n_all_sig > 0) paste0(": ", all_sig_biomarkers)`. `r n_all_ns` biomarker`r if (n_all_ns != 1) "s"` were consistently non-significant across all analyses. `r if (n_mixed > 0) paste0(n_mixed, " biomarker(s) showed mixed results across analyses: ", mixed_biomarkers, ".")` Cells marked ✓ in blue indicate p < .05; orange "Mixed" entries indicate the biomarker changed significance status across the sensitivity conditions.
+**Results.** Of the 7 biomarkers, `r n_all_sig` showed consistent significant reactivity across all three analyses (primary, illness-excluded, and bleed+smoke-excluded)`r if (n_all_sig > 0) paste0(": ", all_sig_biomarkers)`. `r n_all_ns` biomarker`r if (n_all_ns != 1) "s"` were consistently non-significant across all analyses. `r if (n_mixed > 0) paste0(n_mixed, " biomarker(s) showed mixed results across analyses: ", mixed_biomarkers, ".")` Cells marked ✓ in blue indicate p < .05; orange "Mixed" entries indicate the biomarker changed significance status across the sensitivity conditions. `r if (n_mixed > 0) paste0(mixed_detail, "; i.e., its reactivity result was sensitive to which participants were included, not stable across all three samples.")`
 
 ### Quadratic Time Trend Cross-Check
 

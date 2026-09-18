@@ -59,19 +59,30 @@ imap_dfr <- purrr::imap_dfr
 ```
 
 ```{r load-data, echo=FALSE}
+# TAG003 and TAG102 declined the MRI scan and did not complete the session
+# (TAG003 has T1 only, TAG102 has T1-T2 only, across all three biomarker
+# panels -- consistent with stopping before the scan/task-driven timepoints).
+# Excluded from the biomarker analytic sample entirely, at the source, so
+# every downstream table/test (which all scope to the biomarker panels'
+# SampleIDs) reflects the true N = 76.
+sos_session_excluded_ids <- c("TAG003", "TAG102")
+
 sos_cytokines <- read.csv(file.path(
   data_path,
   "TAG/data/SOS/saliva/Cleaned_datasets/SOS_cytokines_cleaned.csv"
-))
+)) |>
+  filter(!(SampleID %in% sos_session_excluded_ids))
 sos_crp <- read.csv(file.path(
   data_path,
   "TAG/data/SOS/saliva/Cleaned_datasets/SOS_CRP_cleaned.csv"
-))
+)) |>
+  filter(!(SampleID %in% sos_session_excluded_ids))
 sos_hormones <- read.csv(file.path(
   data_path,
   "TAG/data/SOS/saliva/Cleaned_datasets/SOS_hormones_cleaned.csv"
 )) |>
-  select(-starts_with("Estradiol"))
+  select(-starts_with("Estradiol")) |>
+  filter(!(SampleID %in% sos_session_excluded_ids))
 
 hr_resting1_raw <- read.csv(file.path(
   data_path,
@@ -163,6 +174,14 @@ wake_time <- sos_session_runner |>
     wake_min = parse_wake(wake_raw),
     wake_min = ifelse(wake_min > 840, NA_real_, wake_min)  # exclude implausible (>2pm)
   ) |>
+  # sos_session_runner has 2 duplicate SampleIDs (TAG085: two blank
+  # responses; TAG017: one valid response and one blank) -- almost certainly
+  # a re-submitted Qualtrics entry. Left undeduplicated, this fans out
+  # through any downstream join with wake_time, silently double-counting
+  # these 2 people. Keep the row with a valid wake_min where one exists.
+  group_by(SampleID) |>
+  slice_max(order_by = !is.na(wake_min), n = 1, with_ties = FALSE) |>
+  ungroup() |>
   select(SampleID, wake_min) |>
   left_join(saliva_timing |> select(SampleID, t1_min), by = "SampleID") |>
   mutate(
@@ -258,6 +277,13 @@ sos_crp_panel       <- sos_crp       |> select(SampleID, Time, CRP_log)
 sos_cytokines_panel <- sos_cytokines |> select(SampleID, Time, IL10_log, IL6_log, TNFalpha_log)
 sos_hormones_panel  <- sos_hormones  |> select(SampleID, Time, DHEA_log, Testosterone_log, Cortisol_log)
 
+# The canonical 76-person biomarker analytic sample (CRP, cytokines, and
+# hormones panels share the exact same SampleIDs after the TAG003/TAG102
+# exclusion above).
+biomarker_ids <- bind_rows(sos_crp_panel, sos_cytokines_panel, sos_hormones_panel) |>
+  distinct(SampleID) |>
+  pull(SampleID)
+
 run_mlm <- function(outcome, data) {
   f_lin  <- as.formula(paste(outcome, "~ 1 + Time + (1 + Time | SampleID)"))
   f_quad <- as.formula(paste(outcome, "~ 1 + poly(Time, 2) + (1 + poly(Time, 2) | SampleID)"))
@@ -344,7 +370,14 @@ fmt_p_fdr   <- function(p) {
 fmt_p_plain <- function(p) {
   if (p < 0.001) "p < 0.001" else sprintf("p = %.3f", p)
 }
-# Moved up from the (old) Hypothesis 1b/HR chunk so it's available to the Aim
+# Used for the HR figure annotations below, which show FDR-corrected p (the
+# HR paired t-tests are now FDR-corrected within their 4-test family, same
+# as the prose) -- labeled distinctly from fmt_p_plain's "p =" so the figure
+# doesn't look like it's showing a raw, uncorrected value.
+fmt_p_fdr_plain <- function(p) {
+  if (p < 0.001) "p_FDR < 0.001" else sprintf("p_FDR = %.3f", p)
+}
+# Moved up from the (old) Aim 1b/HR chunk so it's available to the Aim
 # 1a Subjective Stress results paragraph too, now that Aim 1a runs before HR.
 fmt_p_txt <- function(p) ifelse(p < .001, "< .001", paste0("= ", round(p, 3)))
 
@@ -524,6 +557,15 @@ wt_plt_sd_oth <- wilcox.test(sos_subj_stress$selfdisconnected_subj_stress,
                               sos_subj_stress$other_subj_stress,
                               alternative = "two.sided", paired = TRUE)
 
+# FDR-corrected within this 3-test family (computed here, immediately after
+# the tests themselves, so the plot below and the Wilcoxon table further
+# down both use these same values rather than the plot showing raw p while
+# the table/prose show FDR-corrected p).
+subj_wilcoxon_pfdr <- setNames(
+  p.adjust(c(wt_plt_sc_sd$p.value, wt_plt_sc_oth$p.value, wt_plt_sd_oth$p.value), method = "fdr"),
+  c("sc_sd", "sc_oth", "sd_oth")
+)
+
 subj_comparisons <- list(
   c("Self-Connected", "Self-Disconnected"),
   c("Self-Connected", "Other"),
@@ -553,9 +595,9 @@ subj_plot <- ggplot(
   geom_signif(
     comparisons = subj_comparisons,
     annotations = c(
-      fmt_p_plain(wt_plt_sc_sd$p.value),
-      fmt_p_plain(wt_plt_sc_oth$p.value),
-      fmt_p_plain(wt_plt_sd_oth$p.value)
+      fmt_p_fdr_plain(subj_wilcoxon_pfdr["sc_sd"]),
+      fmt_p_fdr_plain(subj_wilcoxon_pfdr["sc_oth"]),
+      fmt_p_fdr_plain(subj_wilcoxon_pfdr["sd_oth"])
     ),
     tip_length = 0.02, vjust = -0.4, textsize = 4, y_position = c(3.5, 4.5, 4)
   ) +
@@ -603,7 +645,7 @@ peak_pfdr <- setNames(
 ## Age
 
 ```{r age-descriptives}
-# Age at session (also reused as age_df in the Hypothesis 2 puberty-load chunk)
+# Age at session (also reused as age_df in the Aim 2 puberty-load chunk)
 dob_session_raw <- read.csv(file.path(
   data_path, "SOS/SOS-study-monash/questionnaires/SOS_DOB_sessiondate.csv"
 )) |>
@@ -612,29 +654,29 @@ dob_session_raw <- read.csv(file.path(
 age_df <- dob_session_raw |>
   filter(redcap_event_name == "ongoing_records_arm_1") |>
   select(SampleID, dob) |>
-  mutate(dob = as.Date(dob)) |>
+  mutate(dob = as.Date(lubridate::parse_date_time(dob, orders = c("ymd", "mdy")))) |>
   inner_join(
     dob_session_raw |>
       filter(redcap_event_name == "sos_arm_1") |>
       select(SampleID, sos_session_date) |>
-      mutate(sos_session_date = as.Date(sos_session_date)),
+      mutate(sos_session_date = as.Date(lubridate::parse_date_time(sos_session_date, orders = c("ymd", "mdy")))),
     by = "SampleID"
   ) |>
   mutate(age_at_session = as.numeric(sos_session_date - dob) / 365.25) |>
   select(SampleID, age_at_session) |>
-  # Scoped to the actual SOS biomarker analytic sample (N=78; CRP, cytokines,
-  # and hormones panels share the exact same 78 SampleIDs). Without this,
+  # Scoped to the actual SOS biomarker analytic sample (N=76; CRP, cytokines,
+  # and hormones panels share the exact same 76 SampleIDs, after excluding
+  # TAG003/TAG102 -- see sos_session_excluded_ids above). Without this,
   # age_df pulls anyone merely logged/scheduled for an SOS visit in REDCap
-  # (ongoing_records_arm_1 x sos_arm_1), which includes 13 people with no
+  # (ongoing_records_arm_1 x sos_arm_1), which includes people with no
   # biomarker or questionnaire data at all (likely no-shows/incomplete
-  # sessions) and inflates n to 88. This join is not a duplicate-row bug —
-  # both REDCap event filters were checked and have zero duplicate
-  # SampleIDs — it's a sample-scope mismatch.
-  # Note: this scoping still only recovers 76 of the 78 analytic-sample
-  # participants (75 with a valid computed age). TAG122 and TAG305 are in
-  # the biomarker analytic sample but have no matching DOB/session-date
-  # record in SOS_DOB_sessiondate.csv, and TAG313 matches but has a
-  # malformed/missing date field that computes to NA age. 
+  # sessions) and inflates n well beyond the analytic sample. This join is
+  # not a duplicate-row bug — both REDCap event filters were checked and
+  # have zero duplicate SampleIDs — it's a sample-scope mismatch.
+  # Note: this scoping still only recovers 74 of the 76 analytic-sample
+  # participants with a valid computed age. TAG122 has no matching
+  # DOB/session-date record in SOS_DOB_sessiondate.csv, and TAG313 matches
+  # but has a missing dob field that computes to NA age.
   semi_join(
     bind_rows(sos_crp_panel, sos_cytokines_panel, sos_hormones_panel),
     by = "SampleID"
@@ -687,11 +729,88 @@ gender |>
   kable_styling(bootstrap_options = "hover")
 ```
 
+## Race and Ethnicity
+
+*Race/ethnicity was collected as part of the broader TAG study (not the SOS-specific protocol), so
+coverage is incomplete for the newer SOS-specific recruits (SampleIDs >= TAG300), most of whom were
+not enrolled during the TAG wave when this questionnaire was administered. Race is multi-select
+(a participant may be flagged for more than one category), so race percentages do not sum to 100%.*
+
+```{r race-ethnicity-descriptives, echo=FALSE}
+# TAG-wide race/ethnicity data (from the broader TAG study, not SOS-specific).
+# Coding: Ethnicity 1 = Hispanic/Latino, 2 = Not Hispanic/Latino; each Race_*
+# column 1 = is NOT that race, 2 = IS that race; -9 = declined/missing.
+race_eth_raw <- read_excel(file.path(
+  data_path, "TAG/data/Demographics/Race_Ethnicity/TAG_W3_Race_Ethnicity.xlsx"
+), sheet = "Wave 3 Cumulative") |>
+  select(SampleID = tagid, Ethnicity, Race_NAAN, Race_Asian, Race_NHPI,
+         Race_Black, Race_White, Race_Other) |>
+  mutate(across(-SampleID, \(x) na_if(x, -9)))
+
+# Two SOS-specific participants (SampleID >= TAG300) with race/ethnicity
+# available from a separate SOS-specific source, not the TAG-wide file above
+# (which only covers the original TAG cohort). Same coding as above.
+race_eth_sos_specific <- tribble(
+  ~SampleID, ~Ethnicity, ~Race_NAAN, ~Race_Asian, ~Race_NHPI, ~Race_Black, ~Race_White, ~Race_Other,
+  "TAG306",  2,          1,          1,           1,          1,           2,           1,
+  "TAG317",  2,          1,          1,           1,          1,           2,           1
+)
+
+race_eth_df <- bind_rows(race_eth_raw, race_eth_sos_specific) |>
+  distinct(SampleID, .keep_all = TRUE) |>
+  filter(SampleID %in% biomarker_ids)
+
+n_race_missing <- length(biomarker_ids) - nrow(race_eth_df)
+
+race_labels <- c(Race_White = "White", Race_Black = "Black", Race_Asian = "Asian",
+                  Race_NHPI = "Native Hawaiian / Pacific Islander",
+                  Race_NAAN = "American Indian / Alaska Native", Race_Other = "Other")
+
+# Combined race/ethnicity reporting: each person is assigned a single race
+# label (their one flagged race, "More than one race" if multiple are
+# flagged, or "Race not reported" if none/unknown), then crossed with
+# ethnicity (Hispanic/Latino vs. Not Hispanic/Latino) into one combined
+# category, e.g. "Not Hispanic/Latino, White".
+race_flags        <- as.matrix(race_eth_df[, names(race_labels)]) == 2
+n_races_flagged   <- rowSums(race_flags, na.rm = TRUE)
+single_race_label <- race_labels[names(race_labels)[max.col(replace(race_flags, is.na(race_flags), FALSE), ties.method = "first")]]
+
+race_eth_combined <- race_eth_df |>
+  mutate(
+    ethnicity_label = case_when(
+      Ethnicity == 1 ~ "Hispanic/Latino",
+      Ethnicity == 2 ~ "Not Hispanic/Latino",
+      TRUE ~ NA_character_
+    ),
+    race_label = case_when(
+      n_races_flagged > 1  ~ "More than one race",
+      n_races_flagged == 1 ~ unname(single_race_label),
+      TRUE                 ~ "Race not reported"
+    ),
+    combined_label = if_else(is.na(ethnicity_label), NA_character_,
+                              paste0(ethnicity_label, ", ", race_label))
+  ) |>
+  filter(!is.na(combined_label))
+
+n_declined <- nrow(race_eth_df) - nrow(race_eth_combined)
+
+race_eth_combined |>
+  count(combined_label, name = "n") |>
+  mutate(pct = round(100 * n / length(biomarker_ids), 1)) |>
+  arrange(desc(n)) |>
+  kable(col.names = c("Race / Ethnicity", "n", "%"),
+        caption = paste0("Combined race/ethnicity (of ", length(biomarker_ids), "-person sample; ",
+                          n_race_missing, " with no race/ethnicity data on file",
+                          if (n_declined > 0) paste0(", ", n_declined, " declined to answer") else "",
+                          "; percentages of full sample)")) |>
+  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+```
+
 ---
 
 # Peak Timepoint Distribution
 
-Before the immune and hormone reactivity models (Hypothesis 1a), we characterized *when*
+Before the immune and hormone reactivity models (Aim 1c), we characterized *when*
 each person's peak biomarker value occurred across all four saliva collection timepoints
 (T1–T4), rather than restricting "peak" to T3 vs. T4 as in the reactivity analyses below.
 For each biomarker, each participant is assigned the timepoint at which their
@@ -772,7 +891,7 @@ modal_sentence <- peak_modal |>
 
 # Aim 1a: Subjective Stress Reactivity
 
-*Aim 1a (manuscript): Self-Connected Likert stress ratings vs. Self-Disconnected and Other, via Wilcoxon signed-rank tests (ordinal ratings).*
+*Aim 1a (manuscript): Self-Connected Likert stress ratings vs. Self-Disconnected and Other, via Wilcoxon signed-rank tests (ordinal ratings), FDR-corrected within this 3-test family.*
 
 ## Descriptives
 
@@ -800,18 +919,25 @@ subj_plot
 Two-tailed, paired. Reuses the same test objects (`wt_plt_sc_sd`, `wt_plt_sc_oth`, `wt_plt_sd_oth`) computed above for the plot annotations, so the displayed table, the plot, and the prose below can't drift out of sync with each other.
 
 ```{r subj-wilcoxon-table}
+# FDR-corrected within this 3-test family (the three pairwise subjective-
+# stress comparisons), matching the convention already used for the other
+# small within-domain test families in this document (HR: 4, immune: 4,
+# hormones: 3) -- previously left uncorrected while every other family was.
+# Reuses subj_wilcoxon_pfdr (computed above, alongside the tests themselves)
+# rather than re-running p.adjust() a second time on the same three p-values.
 subj_wilcoxon_tbl <- tibble(
   Comparison = c("Self-Connected vs. Self-Disconnected",
                   "Self-Connected vs. Other",
                   "Self-Disconnected vs. Other"),
   W     = c(wt_plt_sc_sd$statistic, wt_plt_sc_oth$statistic, wt_plt_sd_oth$statistic),
-  p     = c(wt_plt_sc_sd$p.value,   wt_plt_sc_oth$p.value,   wt_plt_sd_oth$p.value)
+  p     = c(wt_plt_sc_sd$p.value,   wt_plt_sc_oth$p.value,   wt_plt_sd_oth$p.value),
+  p_fdr = unname(subj_wilcoxon_pfdr[c("sc_sd", "sc_oth", "sd_oth")])
 ) |>
-  mutate(p = round(p, 6))
+  mutate(across(c(p, p_fdr), \(x) round(x, 6)))
 
 subj_wilcoxon_tbl |>
-  mutate(p = cell_spec(p, bold = p < 0.05, color = if_else(p < 0.05, "#2166ac", "black"))) |>
-  kable(col.names = c("Comparison", "W", "p (two-tailed)"), escape = FALSE) |>
+  mutate(p_fdr = cell_spec(p_fdr, bold = p_fdr < 0.05, color = if_else(p_fdr < 0.05, "#2166ac", "black"))) |>
+  kable(col.names = c("Comparison", "W", "p (raw)", "p (FDR)"), escape = FALSE) |>
   kable_styling(bootstrap_options = "hover", full_width = FALSE)
 ```
 
@@ -823,15 +949,19 @@ m_oth <- round(mean(subj_wide$other_subj_stress,           na.rm = TRUE), 2)
 sd_sc  <- round(sd(subj_wide$selfconnected_subj_stress,    na.rm = TRUE), 2)
 sd_sd2 <- round(sd(subj_wide$selfdisconnected_subj_stress, na.rm = TRUE), 2)
 sd_oth <- round(sd(subj_wide$other_subj_stress,            na.rm = TRUE), 2)
+
+p_fdr_sc_sd  <- subj_wilcoxon_tbl$p_fdr[subj_wilcoxon_tbl$Comparison == "Self-Connected vs. Self-Disconnected"]
+p_fdr_sc_oth <- subj_wilcoxon_tbl$p_fdr[subj_wilcoxon_tbl$Comparison == "Self-Connected vs. Other"]
+p_fdr_sd_oth <- subj_wilcoxon_tbl$p_fdr[subj_wilcoxon_tbl$Comparison == "Self-Disconnected vs. Other"]
 ```
 
-**Results.** Participants reported the highest subjective stress during the Self-Connected condition (*M* = `r m_sc`, *SD* = `r sd_sc`), relative to both the Self-Disconnected condition (*M* = `r m_sd2`, *SD* = `r sd_sd2`; Wilcoxon *W* = `r wt_plt_sc_sd$statistic`, *p* `r fmt_p_txt(wt_plt_sc_sd$p.value)`) and the Other condition (*M* = `r m_oth`, *SD* = `r sd_oth`; Wilcoxon *W* = `r wt_plt_sc_oth$statistic`, *p* `r fmt_p_txt(wt_plt_sc_oth$p.value)`). The Self-Disconnected and Other conditions also differed from one another (Wilcoxon *W* = `r wt_plt_sd_oth$statistic`, *p* `r fmt_p_txt(wt_plt_sd_oth$p.value)`).
+**Results.** Participants reported the highest subjective stress during the Self-Connected condition (*M* = `r m_sc`, *SD* = `r sd_sc`), relative to both the Self-Disconnected condition (*M* = `r m_sd2`, *SD* = `r sd_sd2`; Wilcoxon *W* = `r wt_plt_sc_sd$statistic`, *p*~FDR~ `r fmt_p_txt(p_fdr_sc_sd)`) and the Other condition (*M* = `r m_oth`, *SD* = `r sd_oth`; Wilcoxon *W* = `r wt_plt_sc_oth$statistic`, *p*~FDR~ `r fmt_p_txt(p_fdr_sc_oth)`). The Self-Disconnected and Other conditions also differed from one another (Wilcoxon *W* = `r wt_plt_sd_oth$statistic`, *p*~FDR~ `r fmt_p_txt(p_fdr_sd_oth)`). FDR-corrected within this 3-test family.
 
 ---
 
 # Aim 1b: Heart Rate Reactivity
 
-*Aim 1b (manuscript): task heart rate vs. resting-state baseline (two 5-min pre-task scans), and Self-Connected vs. Self-Disconnected/Other/fixation-cross, via two-tailed paired t-tests.*
+*Aim 1b (manuscript): task heart rate vs. resting-state baseline (two 5-min pre-task scans), and Self-Connected vs. Self-Disconnected/Other/fixation-cross, via two-tailed paired t-tests, FDR-corrected within this 4-test family.*
 
 ## Descriptive Means
 
@@ -876,6 +1006,10 @@ bind_rows(
 ## Paired t-tests
 
 ```{r hr-ttests}
+# FDR-corrected within this 4-test family (the four HR comparisons), matching
+# the convention already used for the other within-domain test families in
+# this document (immune: 4, hormones: 3) -- previously left uncorrected while
+# every other family was.
 hr_ttest_tbl <- list(
   "Task vs. Resting" = t.test(hr_all_wide$Task, hr_all_wide$resting_avg, alternative = "two.sided", paired = TRUE),
   "Self-Connected vs. Fixation-Cross" = t.test(pull_hr("Self-Connected"), pull_hr("Fixation-Cross"), alternative = "two.sided", paired = TRUE),
@@ -885,12 +1019,13 @@ hr_ttest_tbl <- list(
   map(broom::tidy) |>
   list_rbind(names_to = "comparison") |>
   select(comparison, estimate, statistic, parameter, p.value) |>
+  mutate(p_fdr = p.adjust(p.value, method = "fdr")) |>
   mutate(across(where(is.numeric), \(x) round(x, 3)))
 
 hr_ttest_tbl |>
-  mutate(p.value = cell_spec(p.value, bold = p.value < 0.05,
-    color = if_else(p.value < 0.05, "#2166ac", "black"))) |>
-  kable(col.names = c("Comparison", "Mean diff", "t", "df", "p"), escape = FALSE) |>
+  mutate(p_fdr = cell_spec(p_fdr, bold = p_fdr < 0.05,
+    color = if_else(p_fdr < 0.05, "#2166ac", "black"))) |>
+  kable(col.names = c("Comparison", "Mean diff", "t", "df", "p (raw)", "p (FDR)"), escape = FALSE) |>
   kable_styling(bootstrap_options = "hover", full_width = FALSE)
 ```
 
@@ -902,7 +1037,7 @@ hr_sc_oth    <- hr_ttest_tbl |> filter(comparison == "Self-Connected vs. Other")
 hr_sc_rest   <- hr_ttest_tbl |> filter(comparison == "Self-Connected vs. Fixation-Cross")
 ```
 
-**Results.** Heart rate was significantly higher during the SOS task compared to the pre-task resting scan (*M*~diff~ = `r hr_task_rest$estimate` bpm, *t*(`r hr_task_rest$parameter`) = `r hr_task_rest$statistic`, *p* `r fmt_p_txt(hr_task_rest$p.value)`). Within the task, heart rate during the Self-Connected condition was significantly higher than both the Self-Disconnected condition (*M*~diff~ = `r hr_sc_sd$estimate` bpm, *t*(`r hr_sc_sd$parameter`) = `r hr_sc_sd$statistic`, *p* `r fmt_p_txt(hr_sc_sd$p.value)`) and the Other condition (*M*~diff~ = `r hr_sc_oth$estimate` bpm, *t*(`r hr_sc_oth$parameter`) = `r hr_sc_oth$statistic`, *p* `r fmt_p_txt(hr_sc_oth$p.value)`), and compared to the within-task fixation-cross period (*M*~diff~ = `r hr_sc_rest$estimate` bpm, *t*(`r hr_sc_rest$parameter`) = `r hr_sc_rest$statistic`, *p* `r fmt_p_txt(hr_sc_rest$p.value)`).
+**Results.** Heart rate was significantly higher during the SOS task compared to the pre-task resting scan (*M*~diff~ = `r hr_task_rest$estimate` bpm, *t*(`r hr_task_rest$parameter`) = `r hr_task_rest$statistic`, *p*~FDR~ `r fmt_p_txt(hr_task_rest$p_fdr)`). Within the task, heart rate during the Self-Connected condition was significantly higher than both the Self-Disconnected condition (*M*~diff~ = `r hr_sc_sd$estimate` bpm, *t*(`r hr_sc_sd$parameter`) = `r hr_sc_sd$statistic`, *p*~FDR~ `r fmt_p_txt(hr_sc_sd$p_fdr)`) and the Other condition (*M*~diff~ = `r hr_sc_oth$estimate` bpm, *t*(`r hr_sc_oth$parameter`) = `r hr_sc_oth$statistic`, *p*~FDR~ `r fmt_p_txt(hr_sc_oth$p_fdr)`), and compared to the within-task fixation-cross period (*M*~diff~ = `r hr_sc_rest$estimate` bpm, *t*(`r hr_sc_rest$parameter`) = `r hr_sc_rest$statistic`, *p*~FDR~ `r fmt_p_txt(hr_sc_rest$p_fdr)`). FDR-corrected within this 4-test family.
 
 ## Plots {.tabset}
 
@@ -950,8 +1085,8 @@ ggplot(hr_avg_long, aes(x = condition, y = mean_hr)) +
   scale_color_viridis_d(option = "C", begin = 0.2, end = 0.85, guide = "none") +
   geom_signif(
     comparisons = list(c("Resting State Scan", "SOS Task")),
-    annotations = fmt_p_plain(
-      hr_ttest_tbl |> filter(comparison == "Task vs. Resting") |> pull(p.value)
+    annotations = fmt_p_fdr_plain(
+      hr_ttest_tbl |> filter(comparison == "Task vs. Resting") |> pull(p_fdr)
     ),
     tip_length = 0.02, vjust = 0.3, textsize = 3.5
   ) +
@@ -987,9 +1122,9 @@ ggplot(hr_conditions_avg, aes(x = task_condition, y = mean_hr)) +
   geom_signif(
     comparisons = task_hr_comparisons,
     annotations = c(
-      fmt_p_plain(hr_ttest_tbl |> filter(comparison == "Self-Connected vs. Self-Disconnected") |> pull(p.value)),
-      fmt_p_plain(hr_ttest_tbl |> filter(comparison == "Self-Connected vs. Other")             |> pull(p.value)),
-      fmt_p_plain(hr_ttest_tbl |> filter(comparison == "Self-Connected vs. Fixation-Cross")     |> pull(p.value))
+      fmt_p_fdr_plain(hr_ttest_tbl |> filter(comparison == "Self-Connected vs. Self-Disconnected") |> pull(p_fdr)),
+      fmt_p_fdr_plain(hr_ttest_tbl |> filter(comparison == "Self-Connected vs. Other")             |> pull(p_fdr)),
+      fmt_p_fdr_plain(hr_ttest_tbl |> filter(comparison == "Self-Connected vs. Fixation-Cross")     |> pull(p_fdr))
     ),
     step_increase = 0.12, tip_length = 0.02, vjust = 0.3, textsize = 3.5
   ) +
@@ -1041,6 +1176,12 @@ lrt_tbl <- imap_dfr(mlm_list, function(res, name) {
   tibble(
     biomarker = name,
     chisq   = round(a$Chisq[2], 2),
+    # Df = 4, not 1: the quadratic model's (1 + poly(Time,2) | SampleID)
+    # random-effects term adds a random quadratic slope and its covariances
+    # with the intercept/linear random slopes, on top of the 1 new fixed
+    # (quadratic) term -- so this LRT is not a clean 1-df test of the fixed
+    # quadratic effect alone. See anova(res$linear, res$quadratic) directly.
+    df      = a$Df[2],
     p_raw   = as.numeric(a[2, p_col])
   )
 }) |>
@@ -1058,10 +1199,10 @@ lrt_tbl |>
     p_fdr_disp = cell_spec(round(p_fdr, 4), bold = p_fdr < 0.05,
       color = if_else(p_fdr < 0.05, "#2166ac", "black"))
   ) |>
-  select(biomarker, group, chisq, p_raw_disp, p_fdr_disp) |>
+  select(biomarker, group, chisq, df, p_raw_disp, p_fdr_disp) |>
   kable(escape = FALSE,
-        col.names = c("biomarker", "Group", "chi-sq", "p (raw)", "p (FDR)"),
-        caption = "Likelihood ratio test: quadratic vs. linear (FDR-corrected within immune and hormone groups; bold = p_FDR < .05)") |>
+        col.names = c("biomarker", "Group", "chi-sq", "df", "p (raw)", "p (FDR)"),
+        caption = "Likelihood ratio test: quadratic vs. linear (FDR-corrected within immune and hormone groups; bold = p_FDR < .05). Df = 4, not 1 -- see note in Section 2.8 / methods on the quadratic model's random-effects structure.") |>
   kable_styling(bootstrap_options = "hover", full_width = FALSE)
 ```
 
@@ -1522,6 +1663,34 @@ fdr_diff_mat |>
   kable_styling(bootstrap_options = "hover")
 ```
 
+## Correlation r-values
+
+```{r corr-rvalues}
+# Same matrix as the corrplot above and the p-value table below -- no numeric
+# r-value table previously existed for this 13x13 matrix (unlike the
+# equivalent puberty/timing correlation sections further down, which do have
+# one); adding it here so every r can be read directly rather than only
+# estimated from the corrplot circle size/color.
+r_diff_mat <- difference_rcorrs$r
+sig_diff_mat <- fdr_diff_mat < 0.05
+
+r_diff_df <- as.data.frame(
+  matrix(
+    mapply(function(r, sig) {
+      cell_spec(round(r, 3), bold = !is.na(sig) & sig,
+                color = if_else(!is.na(sig) & sig, "#2166ac", "black"))
+    }, r_diff_mat, sig_diff_mat),
+    nrow = nrow(r_diff_mat), ncol = ncol(r_diff_mat),
+    dimnames = dimnames(r_diff_mat)
+  )
+)
+
+r_diff_df |>
+  kable(escape = FALSE,
+        caption = "Pearson r among the 13 reactivity difference scores (bold = significant per the FDR/raw convention in the p-value table above).") |>
+  kable_styling(bootstrap_options = "hover")
+```
+
 ```{r corr-results-vals, echo=FALSE, include=FALSE}
 p_upper <- fdr_diff_mat
 p_upper[lower.tri(p_upper, diag = TRUE)] <- NA
@@ -1594,7 +1763,7 @@ parse_menarche_date <- function(x) {
 dob_df <- dob_session_raw |>
   filter(redcap_event_name == "ongoing_records_arm_1") |>
   select(SampleID, dob) |>
-  mutate(dob = as.Date(dob))
+  mutate(dob = as.Date(lubridate::parse_date_time(dob, orders = c("ymd", "mdy"))))
 
 menarche_df <- pds_raw |>
   left_join(dob_df, by = "SampleID") |>
@@ -2176,7 +2345,7 @@ ggplot(react_partial_sig, aes(x = resid_status, y = resid_outcome)) +
 
 ## Correlation Matrix: Pubertal Timing, Age, and Psychosocial Predictors
 
-Intercorrelations among the individual-difference predictors used across the puberty and psychosocial hypotheses: pubertal status (PUBcomp composite), age at menarche, perceived pubertal timing (PDS F5), age at session, BFNES (fear of negative evaluation), and CES-DC (depressive symptoms). This is not a predictor-vs-reactivity matrix (those are reported separately above and in Hypothesis 3 below) -- it's the relationships among the predictors themselves, useful for spotting overlap/multicollinearity before interpreting single-predictor models one at a time.
+Intercorrelations among the individual-difference predictors used across the puberty and psychosocial hypotheses: pubertal status (PUBcomp composite), age at menarche, perceived pubertal timing (PDS F5), age at session, BFNES (fear of negative evaluation), and CES-DC (depressive symptoms). This is not a predictor-vs-reactivity matrix (those are reported separately above and in Aim 3 below) -- it's the relationships among the predictors themselves, useful for spotting overlap/multicollinearity before interpreting single-predictor models one at a time.
 
 ```{r predictors-corr-matrix, fig.width=9, fig.height=8}
 predictors_df <- timing_df |>
@@ -2202,7 +2371,7 @@ predictors_fdr_mat[lower.tri(predictors_fdr_mat)] <- t(predictors_fdr_mat)[lower
 plot_sig_corrplot(predictors_rcorrs$r, predictors_fdr_mat)
 ```
 
-*Circle size and color reflect correlation magnitude (red = negative, blue = positive). X marks indicate non-significant correlations after FDR correction (p~FDR~ ≥ .05, applied across all 15 pairs). Sample sizes vary by pair due to missingness (age at menarche in particular, n = 53 vs. n = 74 for most other variables); `rcorr()` uses pairwise-complete observations.*
+*Circle size and color reflect correlation magnitude (red = negative, blue = positive). X marks indicate non-significant correlations after FDR correction (p~FDR~ ≥ .05, applied across all 15 pairs). Sample sizes vary by pair due to missingness -- age at menarche has the fewest valid cases (n = `r sum(!is.na(predictors_matrix[, "Age at Menarche"]))`), while most other variables have n = `r max(colSums(!is.na(predictors_matrix)))`; `rcorr()` uses pairwise-complete observations.*
 
 ### Correlation p-values: Predictors × Predictors
 
@@ -2256,12 +2425,22 @@ Correlations between pubertal development and raw biomarker levels at each timep
 biomarker_levels <- sos_crp_panel |>
   full_join(sos_cytokines_panel, by = c("SampleID", "Time")) |>
   full_join(sos_hormones_panel,  by = c("SampleID", "Time")) |>
-  left_join(sos_puberty,         by = "SampleID")
+  left_join(sos_puberty,         by = "SampleID") |>
+  left_join(timing_df |> select(SampleID, age_menarche_c, PDS_F5), by = "SampleID")
 ```
 
 ```{r puberty-levels-corr, results='asis'}
-for (pv in puberty_vars) {
-  cat("\n\n##", puberty_label_map[[pv]], "\n\n")
+# Pubertal status (PUBcomp) plus the two timing operationalizations that are
+# used unadjusted elsewhere in this document (age at menarche, PDS F5
+# perceived timing; see [Correlations: All Puberty Variables × Reactivity]).
+# Status-for-age -- the third timing operationalization -- already has its
+# own age-adjusted regression version just below ([Age-Adjusted Effect of
+# Pubertal Status on Raw Biomarker Levels]), so it is not repeated here as a
+# second, unadjusted correlation.
+all_pub_label_map <- setNames(all_pub_labels, all_pub_vars)
+
+for (pv in all_pub_vars) {
+  cat("\n\n##", all_pub_label_map[[pv]], "\n\n")
   bio_vars <- c("CRP_log", "IL10_log", "IL6_log", "TNFalpha_log",
                 "DHEA_log", "Testosterone_log", "Cortisol_log")
 
@@ -2302,8 +2481,8 @@ for (pv in puberty_vars) {
     ))) |>
     kable(format = "html", escape = FALSE,
           col.names = c("Biomarker", "r", "p (FDR)", "r", "p (FDR)", "r", "p (FDR)", "r", "p (FDR)"),
-          caption   = paste0("Correlations: ", puberty_label_map[[pv]],
-                             " ", intToUtf8(215), " biomarker levels (FDR-adjusted within immune/hormones; bold = p_FDR < .05)")) |>
+          caption   = paste0("Correlations: ", all_pub_label_map[[pv]],
+                             " ", intToUtf8(215), " biomarker levels (FDR-adjusted within immune/hormones, 16/12 tests pooling all 4 timepoints; bold = p_FDR < .05)")) |>
     add_header_above(c(" " = 1, "T1" = 2, "T2" = 2, "T3" = 2, "T4" = 2)) |>
     kable_styling(bootstrap_options = "hover", full_width = FALSE) |>
     as.character() |>
@@ -2313,7 +2492,7 @@ for (pv in puberty_vars) {
 
 ## Age-Adjusted Effect of Pubertal Status on Raw Biomarker Levels
 
-The correlations above are unadjusted (pubertal status alone). Here each log-transformed biomarker level, at each timepoint, is regressed jointly on pubertal status (PUBcomp) and age at session, isolating the status-beyond-age effect the same way the reactivity models above do.
+The correlations above are unadjusted (each puberty/timing variable considered alone). Here each log-transformed biomarker level, at each timepoint, is regressed jointly on pubertal status (PUBcomp) and age at session, isolating the status-beyond-age effect -- i.e., the status-for-age timing operationalization -- the same way the reactivity models above do. Age at menarche and PDS F5 perceived timing are not re-tested here, since they are used unadjusted throughout (see the correlations above).
 
 ```{r puberty-levels-regressions}
 biomarker_levels <- biomarker_levels |> left_join(age_df, by = "SampleID")
@@ -2488,12 +2667,19 @@ bfnes_levels_sig_text <- if (n_sig_bfnes_levels == 0) {
 ```{r bfnes-reactivity-corr}
 bfnes_reactivity <- all_difference |>
   left_join(bfnes, by = "SampleID") |>
-  select(-SampleID) |>
-  na.omit()
+  select(-SampleID)
 
+# Pairwise-complete: each reactivity outcome is tested on its own available
+# n (na.omit() on just that outcome + BFNES_total), matching the pairwise
+# convention Aim 2's rcorr() already uses and the raw-level BFNES
+# correlations above (bfnes-levels-corr) already use. Previously this ran a
+# single na.omit() on the full 13-column frame first, so every outcome was
+# tested on the same listwise-complete n (bounded by the HR subsample) even
+# though most outcomes don't need HR data to be non-missing.
 bfnes_react_corrs <- map_dfr(setNames(reactivity_vars, reactivity_labels), function(rv) {
-  ct <- cor.test(bfnes_reactivity[[rv]], bfnes_reactivity$BFNES_total)
-  tibble(r = round(unname(ct$estimate), 3), p_raw = ct$p.value)
+  dat <- bfnes_reactivity |> select(all_of(c(rv, "BFNES_total"))) |> na.omit()
+  ct <- cor.test(dat[[rv]], dat$BFNES_total)
+  tibble(n = nrow(dat), r = round(unname(ct$estimate), 3), p_raw = ct$p.value)
 }, .id = "Reactivity") |>
   mutate(domain = case_when(
     str_detect(Reactivity, "^ΔHR")                                        ~ "HR",
@@ -2506,11 +2692,11 @@ bfnes_react_corrs <- map_dfr(setNames(reactivity_vars, reactivity_labels), funct
   ungroup()
 
 bfnes_react_corrs |>
-  select(Reactivity, r, p_fdr) |>
+  select(Reactivity, n, r, p_fdr) |>
   mutate(p_fdr = cell_spec(p_fdr, bold = !is.na(p_fdr) & p_fdr < 0.05,
     color = if_else(!is.na(p_fdr) & p_fdr < 0.05, "#2166ac", "black"))) |>
-  kable(escape = FALSE, col.names = c("Reactivity outcome", "r", "p (FDR)"),
-        caption = "Correlations: BFNES × reactivity (FDR-adjusted; bold = p_FDR < .05)") |>
+  kable(escape = FALSE, col.names = c("Reactivity outcome", "n", "r", "p (FDR)"),
+        caption = "Correlations: BFNES × reactivity (pairwise-complete n per outcome; FDR-adjusted; bold = p_FDR < .05)") |>
   kable_styling(bootstrap_options = "hover", full_width = FALSE)
 ```
 
@@ -2622,12 +2808,14 @@ dep_levels_sig_text <- if (n_sig_dep_levels == 0) {
 ```{r dep-reactivity-corr}
 dep_reactivity <- all_difference |>
   left_join(dep, by = "SampleID") |>
-  select(-SampleID) |>
-  na.omit()
+  select(-SampleID)
 
+# Pairwise-complete: see the identical note in the BFNES × Reactivity chunk
+# above (bfnes-reactivity-corr) -- same fix, same rationale.
 dep_react_corrs <- map_dfr(setNames(reactivity_vars, reactivity_labels), function(rv) {
-  ct <- cor.test(dep_reactivity[[rv]], dep_reactivity$CESD_total)
-  tibble(r = round(unname(ct$estimate), 3), p_raw = ct$p.value)
+  dat <- dep_reactivity |> select(all_of(c(rv, "CESD_total"))) |> na.omit()
+  ct <- cor.test(dat[[rv]], dat$CESD_total)
+  tibble(n = nrow(dat), r = round(unname(ct$estimate), 3), p_raw = ct$p.value)
 }, .id = "Reactivity") |>
   mutate(domain = case_when(
     str_detect(Reactivity, "^ΔHR")                                        ~ "HR",
@@ -2640,11 +2828,11 @@ dep_react_corrs <- map_dfr(setNames(reactivity_vars, reactivity_labels), functio
   ungroup()
 
 dep_react_corrs |>
-  select(Reactivity, r, p_fdr) |>
+  select(Reactivity, n, r, p_fdr) |>
   mutate(p_fdr = cell_spec(p_fdr, bold = !is.na(p_fdr) & p_fdr < 0.05,
     color = if_else(!is.na(p_fdr) & p_fdr < 0.05, "#2166ac", "black"))) |>
-  kable(escape = FALSE, col.names = c("Reactivity outcome", "r", "p (FDR)"),
-        caption = "Correlations: CES-DC × reactivity (FDR-adjusted; bold = p_FDR < .05)") |>
+  kable(escape = FALSE, col.names = c("Reactivity outcome", "n", "r", "p (FDR)"),
+        caption = "Correlations: CES-DC × reactivity (pairwise-complete n per outcome; FDR-adjusted; bold = p_FDR < .05)") |>
   kable_styling(bootstrap_options = "hover", full_width = FALSE)
 ```
 
@@ -2693,7 +2881,7 @@ bmi <- read.csv(file.path(
 # saliva_timing) so the AUCi diurnal-rhythm check can use hours_since_wake too.
 
 # Static (person-level) covariates shared across trend and reactivity checks.
-# age_df comes from the Hypothesis 2 puberty-load chunk (already computed,
+# age_df comes from the Aim 2 puberty-load chunk (already computed,
 # since that section runs earlier in the document).
 static_covariates <- age_df |>
   left_join(bmi       |> select(SampleID, BMI),               by = "SampleID") |>
@@ -3253,7 +3441,7 @@ if (nrow(changed) == 0) {
 
 For each biomarker, participants are classified using a lenient "any post-baseline increase" rule: **Responder** = at least one of T2, T3, or T4 exceeds T1 (`max(T2, T3, T4) > T1`); **Non-responder** = no post-baseline sample exceeds T1. Participants need at least one non-missing post-T1 sample to be classified; otherwise they are excluded as insufficient data.
 
-This differs from the peak-based reactivity measure used in the main analysis (Hypothesis 1a continued) in two ways: it also considers T2 (the primary analysis only compares T1 to the larger of T3/T4), and it only requires *any single* post-baseline sample to exceed baseline rather than requiring the *larger of two* samples to exceed baseline. As a result, this responder definition is more lenient and is expected to classify more participants as "responders" than would show significant peak reactivity by the primary criterion.
+This differs from the peak-based reactivity measure used in the main analysis (Aim 1c continued) in two ways: it also considers T2 (the primary analysis only compares T1 to the larger of T3/T4), and it only requires *any single* post-baseline sample to exceed baseline rather than requiring the *larger of two* samples to exceed baseline. As a result, this responder definition is more lenient and is expected to classify more participants as "responders" than would show significant peak reactivity by the primary criterion.
 
 ```{r resp-define, echo=FALSE}
 classify_responder <- function(data, value_col) {

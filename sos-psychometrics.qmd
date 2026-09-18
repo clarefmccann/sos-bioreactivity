@@ -250,9 +250,9 @@ describe(pds_scores$PDS_mean) |>
 
 ---
 
-## Pubertal Body Image (PBIP)
+## Picture Based Interview about Puberty (PBIP)
 
-**Pubertal Body Image Perception** (PBIP; Koff & Rierdan, 1995). 2 items used (1A, 2A —
+**Picture Based Interview about Puberty** (PBIP; Koff & Rierdan, 1995). 2 items used (1A, 2A —
 items assessing perceived breast and pubic hair development), rated 2–5. Items 1B and 2B
 (body size / shape) are excluded. Higher scores indicate more advanced perceived pubertal development.
 

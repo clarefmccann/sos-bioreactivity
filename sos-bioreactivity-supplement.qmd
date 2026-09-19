@@ -11,6 +11,7 @@ format:
     code-summary: "Show code"
     theme: journal
     embed-resources: true
+    html-table-processing: none
   docx:
     toc: true
     toc-depth: 3
@@ -94,6 +95,32 @@ cell_spec <- function(x, bold = FALSE, color = NULL, ...) {
 
 kable_styling <- function(kable_input, ...) {
   if (knitr::is_html_output()) kableExtra::kable_styling(kable_input, ...) else kable_input
+}
+
+# APA-style table formatting (no vertical rules, horizontal rules only,
+# serif font) so tables can be copy-pasted straight into a manuscript.
+# HTML only, same reasoning as the kable_styling() shadow above -- Word
+# gets a plain, unstyled kable.
+apa_table <- function(kbl, full_width = FALSE) {
+  if (knitr::is_html_output()) {
+    kableExtra::kable_classic(kbl, full_width = full_width, html_font = "Times New Roman")
+  } else {
+    kbl
+  }
+}
+
+# APA style: italicize non-Greek statistical symbols in table headers (t, df,
+# p, n, N, r, b, M, SD, SE, W, F, d); Greek-letter symbols (e.g. chi-sq) are
+# left as plain text. Requires escape = FALSE on the enclosing kable() call.
+# HTML only (same reasoning as apa_table() above) -- Word gets plain headers.
+italicize_stats <- function(labels) {
+  if (!knitr::is_html_output()) return(labels)
+  stat_tokens <- c("df", "SE", "SD", "p", "t", "n", "N", "r", "b", "M", "W", "F", "d")
+  for (tok in stat_tokens) {
+    pattern <- paste0("(?<![A-Za-z])", tok, "(?![A-Za-z])")
+    labels  <- gsub(pattern, paste0("<em>", tok, "</em>"), labels, perl = TRUE)
+  }
+  labels
 }
 
 row_spec <- function(kable_input, row, ...) {
@@ -939,7 +966,7 @@ few participants missing a scan start time). Thin gray lines are individual part
 observed trajectories; the black line is a loess smooth across everyone, plotted against real
 elapsed time rather than the ordinal T1–T4 sequence.
 
-```{r anchor-traj-plot, fig.width=13, fig.height=7}
+```{r anchor-traj-plot, fig.width=13, fig.height=7, fig.cap="Biomarker trends anchored to each participant's actual scan/session start time"}
 ggplot(anchor_traj_data, aes(x = elapsed_min, y = value)) +
   geom_vline(data = event_lines, aes(xintercept = x, color = event),
              linetype = "dashed", linewidth = 0.6) +
@@ -1044,10 +1071,10 @@ print_levels_corr_table <- function(corr_long, caption) {
       color = if_else(!is.na(x) & x < 0.05, "#2166ac", "black")
     ))) |>
     kable(escape = FALSE,
-          col.names = c("Biomarker", "T1 r", "T1 p (FDR)", "T2 r", "T2 p (FDR)",
-                        "T3 r", "T3 p (FDR)", "T4 r", "T4 p (FDR)"),
+          col.names = italicize_stats(c("Biomarker", "T1 r", "T1 p (FDR)", "T2 r", "T2 p (FDR)",
+                        "T3 r", "T3 p (FDR)", "T4 r", "T4 p (FDR)")),
           caption = caption) |>
-    kable_styling(bootstrap_options = "hover", full_width = FALSE)
+    apa_table(full_width = FALSE)
 }
 ```
 
@@ -1074,7 +1101,7 @@ for (pv in names(indiff_predictors)) {
   run_levels_corr(pv) |>
     print_levels_corr_table(
       caption = paste0("Correlations: ", indiff_predictors[[pv]], " ", intToUtf8(215),
-                        " biomarker levels (FDR-adjusted within immune/hormones, 16/12 tests pooling all 4 timepoints; bold = p_FDR < .05)")
+                        " biomarker levels (FDR-adjusted within immune/hormones, 16/12 tests pooling all 4 timepoints; bold = p (FDR) < .05)")
     ) |>
     as.character() |>
     cat()
@@ -1115,10 +1142,10 @@ levels_joint_tbl |>
     x, bold = !is.na(x) & x < 0.05, color = if_else(!is.na(x) & x < 0.05, "#2166ac", "black")
   ))) |>
   kable(escape = FALSE,
-        col.names = c("Biomarker", "T1 b", "T1 p (FDR)", "T2 b", "T2 p (FDR)",
-                      "T3 b", "T3 p (FDR)", "T4 b", "T4 p (FDR)"),
-        caption = "Effect of pubertal status on log biomarker level, controlling for age (FDR within immune/hormones, 16/12 tests; bold = p_FDR < .05)") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+        col.names = italicize_stats(c("Biomarker", "T1 b", "T1 p (FDR)", "T2 b", "T2 p (FDR)",
+                      "T3 b", "T3 p (FDR)", "T4 b", "T4 p (FDR)")),
+        caption = "Effect of pubertal status on log biomarker level, controlling for age (FDR within immune/hormones, 16/12 tests; bold = p (FDR) < .05)") |>
+  apa_table(full_width = FALSE)
 ```
 
 ---
@@ -1183,9 +1210,9 @@ hr_subsample_desc <- hr_subsample_compare |>
   )
 
 hr_subsample_desc |>
-  kable(col.names = c("Group", "n (total)", "Age: n (M, SD)", "PUBcomp: n (M, SD)", "BMI: n (M, SD)"),
+  kable(escape = FALSE, col.names = italicize_stats(c("Group", "n (total)", "Age: n (M, SD)", "PUBcomp: n (M, SD)", "BMI: n (M, SD)")),
         caption = "Descriptives: participants with vs. without usable HR data") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 
 tibble(
   Variable = c("Age at session", "Pubertal status (PUBcomp)", "BMI", "Gender identity"),
@@ -1199,7 +1226,7 @@ tibble(
 ) |>
   mutate(p = cell_spec(p, bold = p < 0.05, color = if_else(p < 0.05, "#2166ac", "black"))) |>
   kable(escape = FALSE, caption = "Has-HR-data vs. no-HR-data: group comparisons (uncorrected -- 4 independent checks, not a multi-test family in the sense the rest of this document FDR-corrects)") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ```{r hr-subsample-results-vals, echo=FALSE, include=FALSE}
@@ -1264,7 +1291,7 @@ demo_labels <- c("Age at session", "BMI", "Gender identity", "Pubertal status (P
 
 missing_summary(missingdata_base, demo_vars, demo_labels) |>
   kable(caption = paste0("Missing data: demographic, developmental, and covariate variables (of N = ", length(biomarker_ids), ")")) |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 *Hormone/cytokine-relevant medication use is not included above: it is coded FALSE (not missing) for anyone with no medication record, per the rationale in Section S2, so it has 0% missingness by construction rather than by data completeness.*
@@ -1275,7 +1302,7 @@ missing_summary(missingdata_base, demo_vars, demo_labels) |>
 missing_summary(all_difference, reactivity_vars, reactivity_labels) |>
   kable(escape = FALSE,
         caption = paste0("Missing data: the 13 reactivity difference scores used throughout Aim 1d/2/3 (of N = ", length(biomarker_ids), ")")) |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ## Raw Biomarker Levels by Timepoint
@@ -1290,7 +1317,7 @@ biomarker_levels |>
   rename(!!!setNames(names(bio_vars_named), bio_vars_named)) |>
   mutate(Time = paste0("T", Time)) |>
   kable(caption = paste0("N with a valid (non-missing) reading, by biomarker and timepoint (of N = ", length(biomarker_ids), " each)")) |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ```{r missingdata-results-vals, echo=FALSE, include=FALSE}
@@ -1324,9 +1351,9 @@ both sets of results together against the primary (unadjusted, full-sample) find
 smoking |>
   count(smokes) |>
   mutate(smokes = if_else(smokes, "Yes", "No")) |>
-  kable(col.names = c("Smokes", "n"),
+  kable(escape = FALSE, col.names = italicize_stats(c("Smokes", "n")),
         caption   = "Smoking status at time of session") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 #### Oral Hygiene
@@ -1346,7 +1373,7 @@ oral_health |>
   ) |>
   pivot_longer(everything(), names_to = "Item", values_to = "Value") |>
   kable(caption = "Oral health descriptives") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 #### Illness
@@ -1355,9 +1382,9 @@ oral_health |>
 illness |>
   count(ill_yn) |>
   mutate(ill_yn = if_else(ill_yn, "Yes", "No")) |>
-  kable(col.names = c("Ill in last 24 hrs", "n"),
+  kable(escape = FALSE, col.names = italicize_stats(c("Ill in last 24 hrs", "n")),
         caption   = "Illness at time of session") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 
 cat("N excluded for illness:", length(ill_ids), "\n")
 cat("SampleIDs:", paste(ill_ids, collapse = ", "), "\n")
@@ -1373,9 +1400,9 @@ meds_wide |>
   filter(n_using > 0) |>
   mutate(medication = str_remove(medication, "^flag_")) |>
   arrange(desc(n_using)) |>
-  kable(col.names = c("Medication category", "n using"),
+  kable(escape = FALSE, col.names = italicize_stats(c("Medication category", "n using")),
         caption = "Medication use at SOS visit") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ### Illness Exclusion
@@ -1430,10 +1457,10 @@ sens_peak_tests |>
   mutate(across(where(is.numeric), \(x) round(x, 3))) |>
   mutate(p_fdr = cell_spec(p_fdr, bold = p_fdr < 0.05,
     color = if_else(p_fdr < 0.05, "#2166ac", "black"))) |>
-  kable(col.names = c("biomarker", "Mean diff", "t", "df", "p (raw)", "p (FDR)"),
+  kable(col.names = italicize_stats(c("Biomarker", "Mean diff", "t", "df", "p (raw)", "p (FDR)")),
         escape = FALSE,
         caption = "Peak vs. T1 t-tests excluding ill participants") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ```{r sens-illness-hr-ttests}
@@ -1449,10 +1476,10 @@ list(
   mutate(across(where(is.numeric), \(x) round(x, 3))) |>
   mutate(p.value = cell_spec(p.value, bold = p.value < 0.05,
     color = if_else(p.value < 0.05, "#2166ac", "black"))) |>
-  kable(col.names = c("Comparison", "Mean diff", "t", "df", "p"),
+  kable(col.names = italicize_stats(c("Comparison", "Mean diff", "t", "df", "p")),
         escape = FALSE,
         caption = "HR paired t-tests excluding ill participants") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ### BMI × Biomarker Reactivity (Illness-Excluded)
@@ -1505,9 +1532,9 @@ bind_rows(
   mutate(p_fdr = cell_spec(p_fdr, bold = p_fdr < 0.05,
     color = if_else(p_fdr < 0.05, "#2166ac", "black"))) |>
   kable(escape = FALSE,
-        col.names = c("Biomarker", "r", "p (raw)", "p (FDR)"),
+        col.names = italicize_stats(c("Biomarker", "r", "p (raw)", "p (FDR)")),
         caption = "BMI x biomarker reactivity correlations, illness-excluded (FDR within immune markers / hormones)") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ### Bleeding Gums & Smoking Exclusion
@@ -1558,10 +1585,10 @@ clean_peak_tests |>
   mutate(across(where(is.numeric), \(x) round(x, 3))) |>
   mutate(p_fdr = cell_spec(p_fdr, bold = p_fdr < 0.05,
     color = if_else(p_fdr < 0.05, "#2166ac", "black"))) |>
-  kable(col.names = c("biomarker", "Mean diff", "t", "df", "p (raw)", "p (FDR)"),
+  kable(col.names = italicize_stats(c("Biomarker", "Mean diff", "t", "df", "p (raw)", "p (FDR)")),
         escape = FALSE,
         caption = "Peak vs. T1 t-tests: excluding ill, bleeding gums, and smokers") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ### Biomarker Trends: Illness, Bleeding Gums & Smoking Exclusion
@@ -1601,7 +1628,7 @@ clean_best_rows <- clean_model_comp_tbl |>
 
 clean_model_comp_tbl |>
   kable(caption = "Model comparison: excluding ill, bleeding gums, and smokers") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE) |>
+  apa_table(full_width = FALSE) |>
   row_spec(which(clean_best_rows), bold = TRUE, color = "#2166ac")
 ```
 
@@ -1628,9 +1655,9 @@ iwalk(mlm_clean_list, function(res, name) {
     mutate(p_fdr = cell_spec(p_fdr, bold = !is.na(p_fdr) & p_fdr < 0.05,
       color = if_else(!is.na(p_fdr) & p_fdr < 0.05, "#2166ac", "black"))) |>
     kable(escape = FALSE,
-          col.names = c("Term", "b", "SE", "t", "df", "p (raw)", "p (FDR)"),
+          col.names = italicize_stats(c("Term", "b", "SE", "t", "df", "p (raw)", "p (FDR)")),
           caption = paste(name, "quadratic fixed effects (excluding ill, bleeding gums, smokers)")) |>
-    kable_styling(bootstrap_options = "hover", full_width = FALSE) |>
+    apa_table(full_width = FALSE) |>
     print()
 })
 ```
@@ -1639,7 +1666,7 @@ iwalk(mlm_clean_list, function(res, name) {
 
 Correlations between each of the 4 immune reactivity measures and all 13 reactivity measures (Aim 1d), recomputed after excluding participants who were ill, reported bleeding gums, or smoke.
 
-```{r sens-corr-clean, fig.width=12, fig.height=4}
+```{r sens-corr-clean, fig.width=12, fig.height=4, fig.cap="Correlation matrix: immune reactivity x all 13 reactivity outcomes, illness/bleeding-gums/smoking-excluded sample"}
 diff_matrix_clean <- all_difference |>
   filter(!SampleID %in% excl_clean_ids) |>
   select(-SampleID) |>
@@ -1694,7 +1721,7 @@ r_immune_clean_mat |>
   as.data.frame() |>
   mutate(across(everything(), \(x) if_else(is.na(x), "—", as.character(round(x, 3))))) |>
   kable(caption = "Pearson r: illness/bleeding-gums/smoking-excluded sample, immune reactivity x all 13 reactivity outcomes") |>
-  kable_styling(bootstrap_options = "hover")
+  apa_table()
 
 fdr_immune_clean_mat |>
   as.data.frame() |>
@@ -1704,15 +1731,15 @@ fdr_immune_clean_mat |>
     cell_spec(xlab, bold = sig, color = if_else(sig, "#2166ac", "black"))
   })) |>
   kable(escape = FALSE,
-        caption = "FDR-adjusted p-values: illness/bleeding-gums/smoking-excluded sample, immune reactivity x all 13 reactivity outcomes (bold = p_FDR < .05)") |>
-  kable_styling(bootstrap_options = "hover")
+        caption = "FDR-adjusted p-values: illness/bleeding-gums/smoking-excluded sample, immune reactivity x all 13 reactivity outcomes (bold = p (FDR) < .05)") |>
+  apa_table()
 ```
 
 ### Puberty Correlations: Illness, Bleeding Gums & Smoking Exclusion
 
 Correlations between pubertal status/timing (Aim 2) and the 4 immune reactivity measures, recomputed after excluding participants who were ill, reported bleeding gums, or smoke.
 
-```{r sens-puberty-corr-clean, fig.width=8, fig.height=4}
+```{r sens-puberty-corr-clean, fig.width=8, fig.height=4, fig.cap="Correlation matrix: pubertal status/timing x immune reactivity, illness/bleeding-gums/smoking-excluded sample"}
 timing_reactivity_clean <- timing_reactivity |>
   filter(!SampleID %in% excl_clean_ids)
 
@@ -1749,7 +1776,7 @@ pub_immune_corrs_clean$r[all_pub_labels, immune_reactivity_labels, drop = FALSE]
   as.data.frame() |>
   mutate(across(everything(), \(x) if_else(is.na(x), "—", as.character(round(x, 3))))) |>
   kable(caption = "Pearson r: illness/bleeding-gums/smoking-excluded sample, pubertal status/timing x immune reactivity") |>
-  kable_styling(bootstrap_options = "hover")
+  apa_table()
 
 fdr_pub_immune_clean |>
   as.data.frame() |>
@@ -1759,8 +1786,8 @@ fdr_pub_immune_clean |>
     cell_spec(xlab, bold = sig, color = if_else(sig, "#2166ac", "black"))
   })) |>
   kable(escape = FALSE,
-        caption = "FDR-adjusted p-values: illness/bleeding-gums/smoking-excluded sample, pubertal status/timing x immune reactivity (bold = p_FDR < .05)") |>
-  kable_styling(bootstrap_options = "hover")
+        caption = "FDR-adjusted p-values: illness/bleeding-gums/smoking-excluded sample, pubertal status/timing x immune reactivity (bold = p (FDR) < .05)") |>
+  apa_table()
 ```
 
 ## S2: Covariate-Adjusted
@@ -1797,7 +1824,7 @@ saliva_timing |>
     elapsed_h_T4 = "T1 → T4 (hormone tube)"
   )) |>
   kable(caption = "Actual elapsed time (minutes) between saliva collections") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 #### Flow Rate
@@ -1823,7 +1850,7 @@ session_flow_raw |>
   select(tube, Time, Mean, SD, Min, Max, N) |>
   arrange(tube, Time) |>
   kable(caption = "Saliva flow rate (mL/min) by timepoint and tube type") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 #### BMI
@@ -1838,7 +1865,7 @@ bmi |>
     Max  = round(max(BMI,  na.rm = TRUE), 2)
   ) |>
   kable(caption = "BMI descriptives") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 #### Age
@@ -1853,7 +1880,7 @@ age_df |>
     Max  = round(max(age_at_session,  na.rm = TRUE), 2)
   ) |>
   kable(caption = "Age at session (years)") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 #### Time Since Waking
@@ -1872,7 +1899,7 @@ wake_time |>
     Max  = round(max(hours_since_wake), 1)
   ) |>
   kable(caption = "Hours elapsed from waking to T1 sample collection") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ### Flow Rate, Age, BMI & Time-Since-Waking vs. Reactivity
@@ -1933,14 +1960,14 @@ covflow_react_join |>
   pivot_wider(names_from = stat, values_from = value) |>
   mutate(variable = recode(variable, !!!setNames(covflow_labels, covflow_vars))) |>
   kable(caption = "Physiological covariate descriptives (flow-rate deltas in mL/min; peak timepoint minus T1)") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 #### Correlations: Physiological Covariates × All 13 Reactivity Outcomes
 
 This uses the same bivariate-correlation approach as the primary reactivity-correlation analyses (Aim 1d, Aim 2). Columns are the same 13 reactivity outcomes used throughout (4 HR, 4 immune, 3 hormone, 2 subjective stress).
 
-```{r covflow-corr-matrix, fig.width=14, fig.height=6}
+```{r covflow-corr-matrix, fig.width=14, fig.height=6, fig.cap="Correlation matrix: physiological covariates (flow rate, age, BMI, hours since waking) x all 13 reactivity outcomes"}
 covflow_mat <- covflow_react_join |>
   select(all_of(c(covflow_vars, reactivity_vars))) |>
   as.matrix()
@@ -1985,8 +2012,8 @@ fdr_covflow_mat |>
     cell_spec(xlab, bold = sig, color = if_else(sig, "#2166ac", "black"))
   })) |>
   kable(escape = FALSE,
-        caption = "FDR-adjusted p-values: physiological covariates × all reactivity outcomes (bold = p_FDR < .05; — = not tested)") |>
-  kable_styling(bootstrap_options = "hover")
+        caption = "FDR-adjusted p-values: physiological covariates × all reactivity outcomes (bold = p (FDR) < .05; — = not tested)") |>
+  apa_table()
 ```
 
 ```{r covflow-results-vals, echo=FALSE, include=FALSE}
@@ -2119,9 +2146,9 @@ for (nm in names(covtrend_models)) {
     mutate(p_fdr = cell_spec(p_fdr, bold = !is.na(p_fdr) & p_fdr < 0.05,
       color = if_else(!is.na(p_fdr) & p_fdr < 0.05, "#2166ac", "black"))) |>
     kable(escape = FALSE,
-          col.names = c("Term", "b", "SE", "t", "df", "p (raw)", "p (FDR)"),
+          col.names = italicize_stats(c("Term", "b", "SE", "t", "df", "p (raw)", "p (FDR)")),
           caption = paste0(nm, " trend model adjusted for flow rate, age, BMI, hours since waking, and hormone/cytokine-relevant medication use (N = ", n_model, " participants)")) |>
-    kable_styling(bootstrap_options = "hover", full_width = FALSE) |>
+    apa_table(full_width = FALSE) |>
     print()
 }
 ```
@@ -2237,10 +2264,10 @@ med_react_corrs |>
   select(Reactivity, n, r, p_fdr) |>
   mutate(p_fdr = cell_spec(p_fdr, bold = !is.na(p_fdr) & p_fdr < 0.05,
     color = if_else(!is.na(p_fdr) & p_fdr < 0.05, "#2166ac", "black"))) |>
-  kable(escape = FALSE, col.names = c("Reactivity outcome", "n", "r", "p (FDR)"),
-        caption = paste0("Correlations: hormone/cytokine-relevant medication use x reactivity, all 13 outcomes (FDR within domain; bold = p_FDR < .05; descriptive only, n = ",
+  kable(escape = FALSE, col.names = italicize_stats(c("Reactivity outcome", "n", "r", "p (FDR)")),
+        caption = paste0("Correlations: hormone/cytokine-relevant medication use x reactivity, all 13 outcomes (FDR within domain; bold = p (FDR) < .05; descriptive only, n = ",
                           sum(static_covariates$med_hormone_cytokine, na.rm = TRUE), " flagged)")) |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ```{r med-reactivity-results-vals, echo=FALSE, include=FALSE}
@@ -2373,8 +2400,9 @@ all_difference_auci <- all_difference |>
 auci_ttest_tbl |>
   mutate(p.value = cell_spec(p.value, bold = p.value < 0.05,
     color = if_else(p.value < 0.05, "#2166ac", "black"))) |>
-  kable(col.names = c("biomarker", "N", "Mean AUCi", "t", "df", "p (two-tailed)"), escape = FALSE) |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  kable(col.names = italicize_stats(c("Biomarker", "N", "Mean AUCi", "t", "df", "p (two-tailed)")), escape = FALSE,
+        caption = "One-sample t-tests: AUCi-based biomarker reactivity") |>
+  apa_table(full_width = FALSE)
 ```
 
 ```{r s3-auci-fdr}
@@ -2389,8 +2417,9 @@ auci_fdr_tbl <- tibble(
 auci_fdr_tbl |>
   mutate(p_fdr = cell_spec(round(p_fdr, 4), bold = p_fdr < 0.05,
     color = if_else(p_fdr < 0.05, "#2166ac", "black"))) |>
-  kable(col.names = c("Group", "biomarker", "N", "p (raw)", "p (FDR)"), escape = FALSE) |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  kable(col.names = italicize_stats(c("Group", "Biomarker", "N", "p (raw)", "p (FDR)")), escape = FALSE,
+        caption = "FDR correction: AUCi-based biomarker reactivity, within immune and hormone families") |>
+  apa_table(full_width = FALSE)
 ```
 
 ```{r s3-auci-results-vals, echo=FALSE, include=FALSE}
@@ -2471,9 +2500,9 @@ peak_vs_auci_pub |>
     x, bold = !is.na(x) & x < 0.05, color = if_else(!is.na(x) & x < 0.05, "#2166ac", "black")
   ))) |>
   kable(escape = FALSE,
-        col.names = c("Predictor", "Reactivity outcome", "r (peak)", "p_FDR (peak)", "r (AUCi)", "p_FDR (AUCi)"),
-        caption = "Pubertal status/timing x biomarker reactivity: peak-based vs. AUCi-based (bold = p_FDR < .05)") |>
-  kable_styling(bootstrap_options = "hover")
+        col.names = italicize_stats(c("Predictor", "Reactivity outcome", "r (peak)", "p (FDR, peak)", "r (AUCi)", "p (FDR, AUCi)")),
+        caption = "Pubertal status/timing x biomarker reactivity: peak-based vs. AUCi-based (bold = p (FDR) < .05)") |>
+  apa_table()
 ```
 
 ```{r s3-puberty-index-dependent, echo=FALSE, include=FALSE}
@@ -2534,9 +2563,9 @@ bfnes_peak_vs_auci |>
     x, bold = !is.na(x) & x < 0.05, color = if_else(!is.na(x) & x < 0.05, "#2166ac", "black")
   ))) |>
   kable(escape = FALSE,
-        col.names = c("Reactivity outcome", "n (peak)", "r (peak)", "p_FDR (peak)", "n (AUCi)", "r (AUCi)", "p_FDR (AUCi)"),
-        caption = "BFNES x reactivity: peak-based vs. AUCi-based, all 13 outcomes (pairwise-complete n; bold = p_FDR < .05)") |>
-  kable_styling(bootstrap_options = "hover")
+        col.names = italicize_stats(c("Reactivity outcome", "n (peak)", "r (peak)", "p (FDR, peak)", "n (AUCi)", "r (AUCi)", "p (FDR, AUCi)")),
+        caption = "BFNES x reactivity: peak-based vs. AUCi-based, all 13 outcomes (pairwise-complete n; bold = p (FDR) < .05)") |>
+  apa_table()
 ```
 
 ```{r s3-bfnes-index-dependent, echo=FALSE, include=FALSE}
@@ -2588,9 +2617,9 @@ dep_peak_vs_auci |>
     x, bold = !is.na(x) & x < 0.05, color = if_else(!is.na(x) & x < 0.05, "#2166ac", "black")
   ))) |>
   kable(escape = FALSE,
-        col.names = c("Reactivity outcome", "n (peak)", "r (peak)", "p_FDR (peak)", "n (AUCi)", "r (AUCi)", "p_FDR (AUCi)"),
-        caption = "CES-DC x reactivity: peak-based vs. AUCi-based, all 13 outcomes (pairwise-complete n; bold = p_FDR < .05; exploratory aim)") |>
-  kable_styling(bootstrap_options = "hover")
+        col.names = italicize_stats(c("Reactivity outcome", "n (peak)", "r (peak)", "p (FDR, peak)", "n (AUCi)", "r (AUCi)", "p (FDR, AUCi)")),
+        caption = "CES-DC x reactivity: peak-based vs. AUCi-based, all 13 outcomes (pairwise-complete n; bold = p (FDR) < .05; exploratory aim)") |>
+  apa_table()
 ```
 
 ```{r s3-dep-index-dependent, echo=FALSE, include=FALSE}
@@ -2660,12 +2689,12 @@ auci_diurnal_tbl |>
     p_wake  = cell_spec(p_wake,  bold = p_wake  < 0.05, color = if_else(p_wake  < 0.05, "#2166ac", "black")),
     p_clock = cell_spec(p_clock, bold = p_clock < 0.05, color = if_else(p_clock < 0.05, "#2166ac", "black"))
   ) |>
-  kable(col.names = c("Biomarker", "Group", "n (wake)", "r (wake)", "p (wake)",
-                       "n (clock)", "r (clock)", "p (clock)"),
+  kable(col.names = italicize_stats(c("Biomarker", "Group", "n (wake)", "r (wake)", "p (wake)",
+                       "n (clock)", "r (clock)", "p (clock)")),
         escape = FALSE,
         caption = paste0("Correlation between AUCi and (a) hours since waking, (b) session start time, by biomarker. Hours since waking: ",
                           hours_wake_summary, ". Session start time: ", session_start_summary, ".")) |>
-  kable_styling(bootstrap_options = "hover")
+  apa_table()
 ```
 
 ```{r s4-diurnal-results-vals, echo=FALSE, include=FALSE}
@@ -2800,9 +2829,9 @@ peak_time_tbl <- imap_dfr(peak_time_specs, function(time_vec, name) {
   select(biomarker, n_valid, n_T2, n_T3, n_T4)
 
 peak_time_tbl |>
-  kable(col.names = c("Biomarker", "N (valid T2-T4)", "Peaked at T2", "Peaked at T3", "Peaked at T4"),
+  kable(escape = FALSE, col.names = italicize_stats(c("Biomarker", "N (valid T2-T4)", "Peaked at T2", "Peaked at T3", "Peaked at T4")),
         caption = "Which timepoint (T2, T3, or T4) held each biomarker's own maximum") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ### Primary vs. T2-Eligible Peak-vs-T1 Test
@@ -2833,10 +2862,10 @@ peak_t2_compare |>
   select(biomarker, estimate_primary, t_primary, df_primary, p_fdr_primary,
          estimate_t2, t_t2, df_t2, p_fdr_t2) |>
   kable(escape = FALSE,
-        col.names = c("Biomarker", "Mean diff (primary)", "t (primary)", "df (primary)", "p_FDR (primary)",
-                      "Mean diff (T2-eligible)", "t (T2-eligible)", "df (T2-eligible)", "p_FDR (T2-eligible)"),
-        caption = "Peak vs. T1: primary (T3/T4-eligible) vs. T2-eligible peak definition, all 7 biomarkers (FDR within immune/hormones; bold = p_FDR < .05)") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+        col.names = italicize_stats(c("Biomarker", "Mean diff (primary)", "t (primary)", "df (primary)", "p (FDR, primary)",
+                      "Mean diff (T2-eligible)", "t (T2-eligible)", "df (T2-eligible)", "p (FDR, T2-eligible)")),
+        caption = "Peak vs. T1: primary (T3/T4-eligible) vs. T2-eligible peak definition, all 7 biomarkers (FDR within immune/hormones; bold = p (FDR) < .05)") |>
+  apa_table(full_width = FALSE)
 ```
 
 ```{r s5-t2-results-vals, echo=FALSE, include=FALSE}
@@ -2899,10 +2928,10 @@ peak_vs_t2_pub |>
     x, bold = !is.na(x) & x < 0.05, color = if_else(!is.na(x) & x < 0.05, "#2166ac", "black")
   ))) |>
   kable(escape = FALSE,
-        col.names = c("Predictor", "Reactivity outcome", "r (T3/T4 peak)", "p_FDR (T3/T4 peak)",
-                      "r (T2-eligible peak)", "p_FDR (T2-eligible peak)"),
-        caption = "Pubertal status/timing x biomarker reactivity: T3/T4-eligible vs. T2-eligible peak definition (bold = p_FDR < .05)") |>
-  kable_styling(bootstrap_options = "hover")
+        col.names = italicize_stats(c("Predictor", "Reactivity outcome", "r (T3/T4 peak)", "p (FDR, T3/T4 peak)",
+                      "r (T2-eligible peak)", "p (FDR, T2-eligible peak)")),
+        caption = "Pubertal status/timing x biomarker reactivity: T3/T4-eligible vs. T2-eligible peak definition (bold = p (FDR) < .05)") |>
+  apa_table()
 ```
 
 ```{r s5-puberty-t2-index-dependent, echo=FALSE, include=FALSE}
@@ -2941,10 +2970,10 @@ bfnes_peak_vs_t2 |>
     x, bold = !is.na(x) & x < 0.05, color = if_else(!is.na(x) & x < 0.05, "#2166ac", "black")
   ))) |>
   kable(escape = FALSE,
-        col.names = c("Reactivity outcome", "n (T3/T4 peak)", "r (T3/T4 peak)", "p_FDR (T3/T4 peak)",
-                      "n (T2-eligible)", "r (T2-eligible)", "p_FDR (T2-eligible)"),
-        caption = "BFNES x reactivity: T3/T4-eligible vs. T2-eligible peak definition, all 13 outcomes (bold = p_FDR < .05)") |>
-  kable_styling(bootstrap_options = "hover")
+        col.names = italicize_stats(c("Reactivity outcome", "n (T3/T4 peak)", "r (T3/T4 peak)", "p (FDR, T3/T4 peak)",
+                      "n (T2-eligible)", "r (T2-eligible)", "p (FDR, T2-eligible)")),
+        caption = "BFNES x reactivity: T3/T4-eligible vs. T2-eligible peak definition, all 13 outcomes (bold = p (FDR) < .05)") |>
+  apa_table()
 ```
 
 ```{r s5-bfnes-t2-index-dependent, echo=FALSE, include=FALSE}
@@ -2983,10 +3012,10 @@ dep_peak_vs_t2 |>
     x, bold = !is.na(x) & x < 0.05, color = if_else(!is.na(x) & x < 0.05, "#2166ac", "black")
   ))) |>
   kable(escape = FALSE,
-        col.names = c("Reactivity outcome", "n (T3/T4 peak)", "r (T3/T4 peak)", "p_FDR (T3/T4 peak)",
-                      "n (T2-eligible)", "r (T2-eligible)", "p_FDR (T2-eligible)"),
-        caption = "CES-DC x reactivity: T3/T4-eligible vs. T2-eligible peak definition, all 13 outcomes (bold = p_FDR < .05; exploratory aim)") |>
-  kable_styling(bootstrap_options = "hover")
+        col.names = italicize_stats(c("Reactivity outcome", "n (T3/T4 peak)", "r (T3/T4 peak)", "p (FDR, T3/T4 peak)",
+                      "n (T2-eligible)", "r (T2-eligible)", "p (FDR, T2-eligible)")),
+        caption = "CES-DC x reactivity: T3/T4-eligible vs. T2-eligible peak definition, all 13 outcomes (bold = p (FDR) < .05; exploratory aim)") |>
+  apa_table()
 ```
 
 ```{r s5-dep-t2-index-dependent, echo=FALSE, include=FALSE}
@@ -3073,7 +3102,7 @@ bio_cross <- biomarker_ref |>
 bio_cross |>
   kable(escape = FALSE,
         caption = "Biomarker reactivity: significance across all sensitivity analyses (* = p < .05)") |>
-  kable_styling(bootstrap_options = c("hover", "striped"), full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ```{r sens-crosscheck-hr, echo=FALSE}
@@ -3119,8 +3148,8 @@ hr_cross <- hr_ttest_tbl |>
 
 hr_cross |>
   kable(escape = FALSE,
-        caption = "HR reactivity: significance across sensitivity analyses (FDR-corrected within this 4-test family; ✓ = p_FDR < .05)") |>
-  kable_styling(bootstrap_options = c("hover", "striped"), full_width = FALSE)
+        caption = "HR reactivity: significance across sensitivity analyses (FDR-corrected within this 4-test family; ✓ = p (FDR) < .05)") |>
+  apa_table(full_width = FALSE)
 ```
 
 ```{r sens-crosscheck-text, echo=FALSE, include=FALSE}
@@ -3223,7 +3252,7 @@ quad_cross_raw |>
   )) |>
   kable(escape = FALSE,
         caption = "Quadratic time trend: significance across sensitivity analyses (* = p < .05)") |>
-  kable_styling(bootstrap_options = c("hover", "striped"), full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ```{r quad-crosscheck-text, echo=FALSE, include=FALSE}

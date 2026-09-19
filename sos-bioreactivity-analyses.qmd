@@ -11,6 +11,7 @@ format:
     code-summary: "Show code"
     theme: journal
     embed-resources: true
+    html-table-processing: none
 execute:
   warning: false
   message: false
@@ -48,6 +49,67 @@ pacman::p_load(
 proj_path <- here()
 data_path <- Sys.getenv("CAS_DIR") # i have this set as a variable in my home environment. if using this, just update with the actual path of your data
 options(knitr.table.format = "html", scipen = 999)
+
+# APA-style table formatting (no vertical rules, horizontal rules only,
+# serif font) so tables can be copy-pasted straight into a manuscript.
+# Replaces kable_styling(bootstrap_options = "hover", ...) everywhere.
+apa_table <- function(kbl, full_width = FALSE) {
+  kableExtra::kable_classic(kbl, full_width = full_width, html_font = "Times New Roman")
+}
+
+# Consistent color palette so the same category gets the same color in
+# every figure it appears in. Resting/SOS-Task and the biomarkers are
+# user-specified brand colors; the 4 within-task conditions keep their
+# original viridis ("plasma") values.
+# tnf_alpha_label built via intToUtf8() and re-tagged as UTF-8, same fix as
+# the delta/beta symbols in the timing-status-forest chunk -- under this
+# session's "C" locale, a literal "α" in source can be misread by
+# ggplot/grid's text-rendering path even though it displays fine in HTML
+# tables, which silently drops that legend entry. Reused everywhere the
+# TNF-alpha label is needed so every occurrence is guaranteed byte-identical.
+tnf_alpha_label <- paste0("TNF-", {x <- intToUtf8(945); Encoding(x) <- "UTF-8"; x})
+
+condition_colors <- c(
+  "Resting State Scan" = "#540B0E",
+  "Fixation-Cross"      = "#9A169F",
+  "Other"               = "#C13B82",
+  "Self-Disconnected"   = "#DE6263",
+  "Self-Connected"      = "#F58A47",
+  "SOS Task"            = "#56A3A6"
+)
+biomarker_colors <- c(
+  "CRP"          = "#7B2CBF",
+  "IL-10"        = "#FF007F",
+  "IL-6"         = "#902D41",
+  setNames("#31AFD4", tnf_alpha_label),
+  "DHEA"         = "#FFB400",
+  "Testosterone" = "#0D2C54",
+  "Cortisol"     = "#7FB800"
+)
+
+# Matching linetype palettes so category is distinguishable by pattern, not
+# just hue (colorblind- and grayscale-print-accessible). Reuses the same
+# names as the color palettes above.
+condition_linetypes <- setNames(
+  c("solid", "dashed", "dotted", "dotdash", "longdash", "twodash"),
+  names(condition_colors)
+)
+biomarker_linetypes <- setNames(
+  c("solid", "dashed", "dotted", "dotdash", "longdash", "twodash", "1343"),
+  names(biomarker_colors)
+)
+
+# APA style: italicize non-Greek statistical symbols in table headers (t, df,
+# p, n, N, r, b, M, SD, SE, W, F, d); Greek-letter symbols (e.g. chi-sq) are
+# left as plain text. Requires escape = FALSE on the enclosing kable() call.
+italicize_stats <- function(labels) {
+  stat_tokens <- c("df", "SE", "SD", "p", "t", "n", "N", "r", "b", "M", "W", "F", "d")
+  for (tok in stat_tokens) {
+    pattern <- paste0("(?<![A-Za-z])", tok, "(?![A-Za-z])")
+    labels  <- gsub(pattern, paste0("<em>", tok, "</em>"), labels, perl = TRUE)
+  }
+  labels
+}
 
 map <- purrr::map
 map_dbl <- purrr::map_dbl
@@ -365,7 +427,7 @@ make_peak_long <- function(wide_data, t1_col, peak_col, value_name) {
 }
 
 fmt_p_fdr   <- function(p) {
-  if (p < 0.001) "p[FDR] < 0.001" else paste0("p[FDR] == ", round(p, 4))
+  if (p < 0.001) "italic(p)[FDR] < 0.001" else paste0("italic(p)[FDR] == ", round(p, 4))
 }
 fmt_p_plain <- function(p) {
   if (p < 0.001) "p < 0.001" else sprintf("p = %.3f", p)
@@ -375,7 +437,7 @@ fmt_p_plain <- function(p) {
 # as the prose) -- labeled distinctly from fmt_p_plain's "p =" so the figure
 # doesn't look like it's showing a raw, uncorrected value.
 fmt_p_fdr_plain <- function(p) {
-  if (p < 0.001) "p_FDR < 0.001" else sprintf("p_FDR = %.3f", p)
+  if (p < 0.001) "italic(p)[FDR] < .001" else paste0("italic(p)[FDR] == ", sub("^0\\.", ".", sprintf("%.3f", p)))
 }
 # Moved up from the (old) Aim 1b/HR chunk so it's available to the Aim
 # 1a Subjective Stress results paragraph too, now that Aim 1a runs before HR.
@@ -389,8 +451,7 @@ biomarker_plot <- function(data, y_col, y_label, p_fdr) {
       width = 0.6,
       .width = 0,
       justification = -0.2,
-      point_colour = NA,
-      alpha = 0.8
+      point_colour = NA
     ) +
     geom_boxplot(
       width = 0.15,
@@ -582,7 +643,7 @@ subj_plot <- ggplot(
     width = 0.2,
     position = position_dodge(0.9)
   ) +
-  scale_fill_viridis_d(option = "C", begin = 0.2, end = 0.85) +
+  scale_fill_manual(values = condition_colors) +
   stat_summary(
     fun.data = make_box_stats(subj_stress_long, "stress"),
     geom = "text",
@@ -599,7 +660,8 @@ subj_plot <- ggplot(
       fmt_p_fdr_plain(subj_wilcoxon_pfdr["sc_oth"]),
       fmt_p_fdr_plain(subj_wilcoxon_pfdr["sd_oth"])
     ),
-    tip_length = 0.02, vjust = -0.4, textsize = 4, y_position = c(3.5, 4.5, 4)
+    tip_length = 0.02, vjust = -0.4, textsize = 4, y_position = c(3.5, 4.5, 4),
+    parse = TRUE
   ) +
   scale_y_continuous(expand = expansion(mult = c(0, 0.45))) +
   ylab("Mean stress rating") +
@@ -691,7 +753,7 @@ age_df |>
     Max  = round(max(age_at_session,  na.rm = TRUE), 2)
   ) |>
   kable(caption = "Age at session (years)") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ```{r age-distribution}
@@ -702,9 +764,9 @@ age_df |>
                         right = FALSE)) |>
   count(age_bin, name = "n") |>
   mutate(pct = round(100 * n / sum(n), 1)) |>
-  kable(col.names = c("Age (years)", "n", "%"),
+  kable(escape = FALSE, col.names = italicize_stats(c("Age (years)", "n", "%")),
         caption = "Distribution of age at session") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ## Gender Identity
@@ -724,9 +786,9 @@ gender |>
   count(identity, name = "n") |>
   mutate(pct = round(100 * n / sum(n), 1)) |>
   arrange(desc(n)) |>
-  kable(col.names = c("Gender identity", "n", "%"),
+  kable(escape = FALSE, col.names = italicize_stats(c("Gender identity", "n", "%")),
         caption = "Distribution of gender identities in the sample") |>
-  kable_styling(bootstrap_options = "hover")
+  apa_table()
 ```
 
 ## Race and Ethnicity
@@ -798,12 +860,12 @@ race_eth_combined |>
   count(combined_label, name = "n") |>
   mutate(pct = round(100 * n / length(biomarker_ids), 1)) |>
   arrange(desc(n)) |>
-  kable(col.names = c("Race / Ethnicity", "n", "%"),
+  kable(escape = FALSE, col.names = italicize_stats(c("Race / Ethnicity", "n", "%")),
         caption = paste0("Combined race/ethnicity (of ", length(biomarker_ids), "-person sample; ",
                           n_race_missing, " with no race/ethnicity data on file",
                           if (n_declined > 0) paste0(", ", n_declined, " declined to answer") else "",
                           "; percentages of full sample)")) |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ---
@@ -856,12 +918,12 @@ peak_timepoint_tbl |>
   select(biomarker, time_point, display) |>
   pivot_wider(names_from = time_point, values_from = display) |>
   arrange(biomarker) |>
-  kable(col.names = c("biomarker", "T1", "T2", "T3", "T4"),
+  kable(escape = FALSE, col.names = italicize_stats(c("Biomarker", "T1", "T2", "T3", "T4")),
         caption = "Number (%) of participants whose peak (highest) value for each biomarker occurred at each timepoint") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
-```{r peak-timepoint-plot, fig.width=10, fig.height=6}
+```{r peak-timepoint-plot, fig.width=10, fig.height=6, fig.cap="Distribution of each biomarker's peak (highest) timepoint across participants"}
 ggplot(peak_timepoint_tbl, aes(x = time_point, y = pct, fill = time_point)) +
   geom_col() +
   geom_text(aes(label = n), vjust = -0.3, size = 3) +
@@ -910,7 +972,7 @@ bind_rows(
 
 ## Plot
 
-```{r subj-stress-plot, fig.width=6, fig.height=6}
+```{r subj-stress-plot, fig.width=6, fig.height=6, fig.cap="Subjective stress ratings by task condition (Self-Connected, Self-Disconnected, Other)"}
 subj_plot
 ```
 
@@ -937,8 +999,9 @@ subj_wilcoxon_tbl <- tibble(
 
 subj_wilcoxon_tbl |>
   mutate(p_fdr = cell_spec(p_fdr, bold = p_fdr < 0.05, color = if_else(p_fdr < 0.05, "#2166ac", "black"))) |>
-  kable(col.names = c("Comparison", "W", "p (raw)", "p (FDR)"), escape = FALSE) |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  kable(col.names = italicize_stats(c("Comparison", "W", "p (raw)", "p (FDR)")), escape = FALSE,
+        caption = "Wilcoxon signed-rank tests: subjective stress across task conditions") |>
+  apa_table(full_width = FALSE)
 ```
 
 ```{r subj-results-vals, echo=FALSE, include=FALSE}
@@ -983,7 +1046,8 @@ tibble(
     mean(pull_hr("Self-Connected"))
   ), 2)
 ) |>
-  kable()
+  kable(caption = "Descriptive mean heart rate (bpm) by condition") |>
+  apa_table(full_width = FALSE)
 ```
 
 ## HR Difference Score Descriptives
@@ -1025,8 +1089,9 @@ hr_ttest_tbl <- list(
 hr_ttest_tbl |>
   mutate(p_fdr = cell_spec(p_fdr, bold = p_fdr < 0.05,
     color = if_else(p_fdr < 0.05, "#2166ac", "black"))) |>
-  kable(col.names = c("Comparison", "Mean diff", "t", "df", "p (raw)", "p (FDR)"), escape = FALSE) |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  kable(col.names = italicize_stats(c("Comparison", "Mean diff", "t", "df", "p (raw)", "p (FDR)")), escape = FALSE,
+        caption = "Paired t-tests: heart rate reactivity across task conditions (FDR-corrected within this 4-test family)") |>
+  apa_table(full_width = FALSE)
 ```
 
 ```{r hr-results-vals, echo=FALSE, include=FALSE}
@@ -1043,7 +1108,7 @@ hr_sc_rest   <- hr_ttest_tbl |> filter(comparison == "Self-Connected vs. Fixatio
 
 ### Task vs. Resting
 
-```{r avg-hr-plot, fig.width=5, fig.height=5}
+```{r avg-hr-plot, fig.width=5, fig.height=5, fig.cap="Mean heart rate: resting-state scan vs. SOS task"}
 hr_avg_long <- hr_all_wide |>
   select(id, resting_avg, Task) |>
   pivot_longer(
@@ -1066,8 +1131,7 @@ ggplot(hr_avg_long, aes(x = condition, y = mean_hr)) +
     width = 0.6,
     .width = 0,
     justification = -0.2,
-    point_colour = NA,
-    alpha = 0.8
+    point_colour = NA
   ) +
   geom_boxplot(
     width = 0.15,
@@ -1081,14 +1145,14 @@ ggplot(hr_avg_long, aes(x = condition, y = mean_hr)) +
     size = 1.2,
     alpha = 0.3
   ) +
-  scale_fill_viridis_d(option = "C", begin = 0.2, end = 0.85) +
-  scale_color_viridis_d(option = "C", begin = 0.2, end = 0.85, guide = "none") +
+  scale_fill_manual(values = condition_colors) +
+  scale_color_manual(values = condition_colors, guide = "none") +
   geom_signif(
     comparisons = list(c("Resting State Scan", "SOS Task")),
     annotations = fmt_p_fdr_plain(
       hr_ttest_tbl |> filter(comparison == "Task vs. Resting") |> pull(p_fdr)
     ),
-    tip_length = 0.02, vjust = 0.3, textsize = 3.5
+    tip_length = 0.02, vjust = 0.3, textsize = 3.5, parse = TRUE
   ) +
   ylab("Mean Heart Rate (bpm)") +
   xlab(NULL) +
@@ -1098,7 +1162,7 @@ ggplot(hr_avg_long, aes(x = condition, y = mean_hr)) +
 
 ### Within-task Conditions
 
-```{r task-hr-plot, fig.width=7, fig.height=5}
+```{r task-hr-plot, fig.width=7, fig.height=5, fig.cap="Mean heart rate across within-task conditions (Self-Connected, Self-Disconnected, Other, Fixation-Cross)"}
 task_hr_comparisons <- list(
   c("Self-Connected", "Self-Disconnected"),
   c("Self-Connected", "Other"),
@@ -1109,7 +1173,7 @@ ggplot(hr_conditions_avg, aes(x = task_condition, y = mean_hr)) +
   stat_halfeye(
     aes(fill = task_condition),
     adjust = 0.5, width = 0.6, .width = 0,
-    justification = -0.2, point_colour = NA, alpha = 0.8
+    justification = -0.2, point_colour = NA
   ) +
   geom_boxplot(width = 0.15, outlier.shape = NA, color = "gray30", linewidth = 0.5) +
   geom_point(
@@ -1117,8 +1181,8 @@ ggplot(hr_conditions_avg, aes(x = task_condition, y = mean_hr)) +
     position = position_jitter(seed = 1, width = 0.1),
     size = 1.2, alpha = 0.3
   ) +
-  scale_fill_viridis_d(option = "C", begin = 0.2, end = 0.85) +
-  scale_color_viridis_d(option = "C", begin = 0.2, end = 0.85, guide = "none") +
+  scale_fill_manual(values = condition_colors) +
+  scale_color_manual(values = condition_colors, guide = "none") +
   geom_signif(
     comparisons = task_hr_comparisons,
     annotations = c(
@@ -1126,7 +1190,7 @@ ggplot(hr_conditions_avg, aes(x = task_condition, y = mean_hr)) +
       fmt_p_fdr_plain(hr_ttest_tbl |> filter(comparison == "Self-Connected vs. Other")             |> pull(p_fdr)),
       fmt_p_fdr_plain(hr_ttest_tbl |> filter(comparison == "Self-Connected vs. Fixation-Cross")     |> pull(p_fdr))
     ),
-    step_increase = 0.12, tip_length = 0.02, vjust = 0.3, textsize = 3.5
+    step_increase = 0.12, tip_length = 0.02, vjust = 0.3, textsize = 3.5, parse = TRUE
   ) +
   ylab("Mean Heart Rate (bpm)") + xlab(NULL) + theme_minimal() + theme(legend.position = "none")
 ```
@@ -1162,8 +1226,8 @@ best_rows <- model_comp_tbl |>
   pull(is_best)
 
 model_comp_tbl |>
-  kable() |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE) |>
+  kable(caption = "Model comparison (AIC/BIC): linear vs. quadratic time trend, by biomarker (best-fitting model in bold)") |>
+  apa_table(full_width = FALSE) |>
   row_spec(which(best_rows), bold = TRUE, color = "#2166ac")
 ```
 
@@ -1201,9 +1265,9 @@ lrt_tbl |>
   ) |>
   select(biomarker, group, chisq, df, p_raw_disp, p_fdr_disp) |>
   kable(escape = FALSE,
-        col.names = c("biomarker", "Group", "chi-sq", "df", "p (raw)", "p (FDR)"),
-        caption = "Likelihood ratio test: quadratic vs. linear (FDR-corrected within immune and hormone groups; bold = p_FDR < .05). Df = 4, not 1 -- see note in Section 2.8 / methods on the quadratic model's random-effects structure.") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+        col.names = italicize_stats(c("Biomarker", "Group", "chi-sq", "df", "p (raw)", "p (FDR)")),
+        caption = "Likelihood ratio test: quadratic vs. linear (FDR-corrected within immune and hormone groups; bold = p (FDR) < .05). Df = 4, not 1 -- see note in Section 2.8 / methods on the quadratic model's random-effects structure.") |>
+  apa_table(full_width = FALSE)
 ```
 
 ```{r biomarker-trends-results-vals, echo=FALSE, include=FALSE}
@@ -1252,28 +1316,30 @@ iwalk(mlm_list, function(res, name) {
     mutate(p_fdr = cell_spec(p_fdr, bold = !is.na(p_fdr) & p_fdr < 0.05,
       color = if_else(!is.na(p_fdr) & p_fdr < 0.05, "#2166ac", "black"))) |>
     kable(escape = FALSE,
-          col.names = c("Term", "b", "SE", "t", "df", "p (raw)", "p (FDR)")) |>
-    kable_styling(bootstrap_options = "hover", full_width = FALSE) |>
+          col.names = italicize_stats(c("Term", "b", "SE", "t", "df", "p (raw)", "p (FDR)")),
+          caption = paste0(name, ": quadratic time-trend model fixed effects")) |>
+    apa_table(full_width = FALSE) |>
     print()
 })
 ```
 
 ## Quadratic Curves
 
-```{r quad-plots, fig.width=10, fig.height=4}
+```{r quad-plots, fig.width=10, fig.height=4, fig.cap="Quadratic time trends: cytokines and hormones"}
 cytokines_long <- sos_cytokines_panel |>
   pivot_longer(c(IL10_log, IL6_log, TNFalpha_log), names_to = "biomarker", values_to = "log_conc") |>
   mutate(biomarker = case_match(
     biomarker,
     "IL10_log"     ~ "IL-10",
     "IL6_log"      ~ "IL-6",
-    "TNFalpha_log" ~ "TNF-\u03b1"
+    "TNFalpha_log" ~ tnf_alpha_label
   ))
 
-cytokines_quad_plot <- ggplot(cytokines_long, aes(Time, log_conc, color = biomarker)) +
+cytokines_quad_plot <- ggplot(cytokines_long, aes(Time, log_conc, color = biomarker, linetype = biomarker)) +
   stat_smooth(method = "lm", formula = y ~ x + I(x^2), linewidth = 1,
               aes(fill = after_scale(colour)), alpha = 0.2) +
-  scale_colour_viridis_d(option = "C", begin = 0.2, end = 0.85) +
+  scale_colour_manual(values = biomarker_colors) +
+  scale_linetype_manual(values = biomarker_linetypes) +
   ylab("Concentration (log-transformed)") + xlab("Time point") + ggtitle("Cytokines") + theme_minimal()
 
 hormones_long <- sos_hormones_panel |>
@@ -1285,10 +1351,11 @@ hormones_long <- sos_hormones_panel |>
     "Cortisol_log"     ~ "Cortisol"
   ))
 
-hormones_quad_plot <- ggplot(hormones_long, aes(Time, log_conc, color = biomarker)) +
+hormones_quad_plot <- ggplot(hormones_long, aes(Time, log_conc, color = biomarker, linetype = biomarker)) +
   stat_smooth(method = "lm", formula = y ~ x + I(x^2), linewidth = 1,
               aes(fill = after_scale(colour)), alpha = 0.2) +
-  scale_colour_viridis_d(option = "C", begin = 0.2, end = 0.85) +
+  scale_colour_manual(values = biomarker_colors) +
+  scale_linetype_manual(values = biomarker_linetypes) +
   ylab("Concentration (log-transformed)") + xlab("Time point") + ggtitle("Hormones") + theme_minimal()
 
 ggarrange(cytokines_quad_plot, hormones_quad_plot, ncol = 2)
@@ -1300,7 +1367,7 @@ Each person's observed trajectory (thin grey lines) with individual model-fitted
 (thin coloured lines, based on random slope/intercept estimates) and the population-average
 quadratic trajectory (thick line).
 
-```{r ind-growth-curves, fig.width=12, fig.height=8}
+```{r ind-growth-curves, fig.width=12, fig.height=8, fig.cap="Individual growth curves by biomarker: observed trajectories, model-fitted individual curves, and population-average quadratic trend"}
 panel_map <- list(
   "CRP"          = list(data = sos_crp_panel,       col = "CRP_log"),
   "IL-10"        = list(data = sos_cytokines_panel, col = "IL10_log"),
@@ -1376,8 +1443,9 @@ peak_ttest_tbl <- peak_tests_raw |>
 peak_ttest_tbl |>
   mutate(p.value = cell_spec(p.value, bold = p.value < 0.05,
     color = if_else(p.value < 0.05, "#2166ac", "black"))) |>
-  kable(col.names = c("biomarker", "Mean diff (peak − T1)", "t", "df", "p (two-tailed)"), escape = FALSE) |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  kable(col.names = italicize_stats(c("Biomarker", "Mean diff (peak − T1)", "t", "df", "p (two-tailed)")), escape = FALSE,
+        caption = "Paired t-tests: biomarker reactivity (peak vs. T1)") |>
+  apa_table(full_width = FALSE)
 ```
 
 ## FDR Correction
@@ -1393,8 +1461,9 @@ fdr_tbl <- tibble(
 fdr_tbl |>
   mutate(p_fdr = cell_spec(round(p_fdr, 4), bold = p_fdr < 0.05,
     color = if_else(p_fdr < 0.05, "#2166ac", "black"))) |>
-  kable(col.names = c("Group", "biomarker", "p (raw)", "p (FDR)"), escape = FALSE) |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  kable(col.names = italicize_stats(c("Group", "Biomarker", "p (raw)", "p (FDR)")), escape = FALSE,
+        caption = "FDR correction: biomarker reactivity (peak vs. T1), within immune and hormone families") |>
+  apa_table(full_width = FALSE)
 ```
 
 ```{r reactivity-results-vals, echo=FALSE, include=FALSE}
@@ -1459,17 +1528,17 @@ t3_vs_t4_tbl <- imap_dfr(t3_vs_t4_specs, function(s, name) {
 ```{r t3-vs-t4-table-all}
 t3_vs_t4_tbl |>
   select(biomarker, n_valid, n_peaked_T3, n_peaked_T4, n_tie) |>
-  kable(col.names = c("biomarker", "N (valid T3 & T4)", "Peaked at T3", "Peaked at T4", "Tied"),
+  kable(escape = FALSE, col.names = italicize_stats(c("Biomarker", "N (valid T3 & T4)", "Peaked at T3", "Peaked at T4", "Tied")),
         caption = "Which timepoint (T3 or T4) had the higher value, all participants") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ```{r t3-vs-t4-table-responders}
 t3_vs_t4_tbl |>
   select(biomarker, n_responders, n_resp_peaked_T3, n_resp_peaked_T4) |>
-  kable(col.names = c("biomarker", "N responders (peak > T1)", "...peaked at T3", "...peaked at T4"),
+  kable(escape = FALSE, col.names = italicize_stats(c("Biomarker", "N responders (peak > T1)", "...peaked at T3", "...peaked at T4")),
         caption = "Among responders only: which timepoint (T3 or T4) captured the peak") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ```{r t3-vs-t4-results-vals, echo=FALSE, include=FALSE}
@@ -1496,7 +1565,7 @@ Sections S3–S4 for the full one-sample AUCi tests, the peak-vs-AUCi head-to-he
 
 ### All (grid)
 
-```{r immune-grid, fig.width=10, fig.height=9}
+```{r immune-grid, fig.width=10, fig.height=9, fig.cap="Immune marker reactivity (peak vs. T1): CRP, IL-10, IL-6, TNF-alpha"}
 crp_plot  <- biomarker_plot(sos_crp_long,  "crp_log_conc",  "CRP (log-transformed)",        peak_pfdr["crp"])
 il10_plot <- biomarker_plot(sos_il10_long, "il10_log_conc", "IL-10 (log-transformed)",       peak_pfdr["il10"])
 il6_plot  <- biomarker_plot(sos_il6_long,  "il6_log_conc",  "IL-6 (log-transformed)",        peak_pfdr["il6"])
@@ -1509,25 +1578,25 @@ ggarrange(crp_plot, il10_plot, il6_plot, tnfa_plot,
 
 ### CRP
 
-```{r crp-plot, fig.width=5, fig.height=5}
+```{r crp-plot, fig.width=5, fig.height=5, fig.cap="CRP reactivity (peak vs. T1)"}
 crp_plot
 ```
 
 ### IL-10
 
-```{r il10-plot, fig.width=5, fig.height=5}
+```{r il10-plot, fig.width=5, fig.height=5, fig.cap="IL-10 reactivity (peak vs. T1)"}
 il10_plot
 ```
 
 ### IL-6
 
-```{r il6-plot, fig.width=5, fig.height=5}
+```{r il6-plot, fig.width=5, fig.height=5, fig.cap="IL-6 reactivity (peak vs. T1)"}
 il6_plot
 ```
 
 ### TNF-alpha
 
-```{r tnfa-plot, fig.width=5, fig.height=5}
+```{r tnfa-plot, fig.width=5, fig.height=5, fig.cap="TNF-alpha reactivity (peak vs. T1)"}
 tnfa_plot
 ```
 
@@ -1535,7 +1604,7 @@ tnfa_plot
 
 ### All (grid)
 
-```{r hormone-grid, fig.width=12, fig.height=5}
+```{r hormone-grid, fig.width=12, fig.height=5, fig.cap="Hormone reactivity (peak vs. T1): DHEA, Testosterone, Cortisol"}
 dhea_plot <- biomarker_plot(sos_dhea_long, "dhea_log_conc", "DHEA (log-transformed)",          peak_pfdr["dhea"])
 test_plot <- biomarker_plot(sos_test_long, "test_log_conc", "Testosterone (log-transformed)",   peak_pfdr["test"])
 cort_plot <- biomarker_plot(sos_cort_long, "cort_log_conc", "Cortisol (log-transformed)",       peak_pfdr["cort"])
@@ -1547,19 +1616,19 @@ ggarrange(dhea_plot, test_plot, cort_plot,
 
 ### DHEA
 
-```{r dhea-plot, fig.width=5, fig.height=5}
+```{r dhea-plot, fig.width=5, fig.height=5, fig.cap="DHEA reactivity (peak vs. T1)"}
 dhea_plot
 ```
 
 ### Testosterone
 
-```{r test-plot, fig.width=5, fig.height=5}
+```{r test-plot, fig.width=5, fig.height=5, fig.cap="Testosterone reactivity (peak vs. T1)"}
 test_plot
 ```
 
 ### Cortisol
 
-```{r cort-plot, fig.width=5, fig.height=5}
+```{r cort-plot, fig.width=5, fig.height=5, fig.cap="Cortisol reactivity (peak vs. T1)"}
 cort_plot
 ```
 
@@ -1580,7 +1649,8 @@ bind_rows(
     `ΔTestosterone` = test_difference,
     `ΔCortisol`     = cort_difference
   ) |>
-  kable(digits = 3)
+  kable(digits = 3, caption = "Descriptives: biomarker reactivity difference scores (peak vs. T1)") |>
+  apa_table(full_width = FALSE)
 ```
 
 ---
@@ -1589,7 +1659,7 @@ bind_rows(
 
 *Aim 1d (manuscript): bivariate Pearson correlations among all magnitude-of-change (reactivity) difference scores.*
 
-```{r corr-matrix, fig.width=10, fig.height=9}
+```{r corr-matrix, fig.width=10, fig.height=9, fig.cap="Correlation matrix: all 13 reactivity outcomes (X = not FDR-significant)"}
 diff_matrix <- all_difference |> select(-SampleID) |> as.matrix()
 colnames(diff_matrix) <- c(
   "ΔHR: Task vs. Rest", "ΔHR: SC vs. SD", "ΔHR: SC vs. Other", "ΔHR: SC vs. Fixation-Cross",
@@ -1660,7 +1730,7 @@ fdr_diff_mat |>
   })) |>
   kable(escape = FALSE,
         caption = "P-values FDR-corrected within domain (HR, immune, hormones, subjective stress); cross-domain pairs raw (bold = p < .05).") |>
-  kable_styling(bootstrap_options = "hover")
+  apa_table()
 ```
 
 ## Correlation r-values
@@ -1688,7 +1758,7 @@ r_diff_df <- as.data.frame(
 r_diff_df |>
   kable(escape = FALSE,
         caption = "Pearson r among the 13 reactivity difference scores (bold = significant per the FDR/raw convention in the p-value table above).") |>
-  kable_styling(bootstrap_options = "hover")
+  apa_table()
 ```
 
 ```{r corr-results-vals, echo=FALSE, include=FALSE}
@@ -1842,14 +1912,14 @@ sos_puberty |>
   pivot_wider(names_from = stat, values_from = value) |>
   mutate(variable = recode(variable, !!!puberty_label_map)) |>
   kable(caption = "Puberty variable descriptives") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ## Correlations: All Puberty Variables × Reactivity
 
 Rows include pubertal status (PDS+line drawings composite), age at menarche, and PDS F5 perceived timing; columns are all reactivity outcomes.
 
-```{r all-puberty-corr-matrix, fig.width=14, fig.height=5}
+```{r all-puberty-corr-matrix, fig.width=14, fig.height=5, fig.cap="Correlation matrix: pubertal status/timing variables x all 13 reactivity outcomes (X = not FDR-significant)"}
 all_pub_vars   <- c(puberty_vars, timing_vars)
 all_pub_labels <- c(puberty_labels, timing_labels)
 
@@ -1901,8 +1971,8 @@ fdr_allpub_mat |>
     cell_spec(xlab, bold = sig, color = if_else(sig, "#2166ac", "black"))
   })) |>
   kable(escape = FALSE,
-        caption = "FDR-adjusted p-values: all puberty variables × reactivity (bold = p_FDR < .05)") |>
-  kable_styling(bootstrap_options = "hover")
+        caption = "FDR-adjusted p-values: all puberty variables × reactivity (bold = p (FDR) < .05)") |>
+  apa_table()
 ```
 
 ## Correlation r-values: All Puberty Variables × Reactivity
@@ -1926,8 +1996,8 @@ r_df <- as.data.frame(
 
 r_df |>
   kable(escape = FALSE,
-        caption = "Pearson r: all puberty variables × reactivity (bold = FDR-significant, p_FDR < .05)") |>
-  kable_styling(bootstrap_options = "hover")
+        caption = "Pearson r: all puberty variables × reactivity (bold = FDR-significant, p (FDR) < .05)") |>
+  apa_table()
 ```
 
 ```{r all-puberty-results-vals, echo=FALSE, include=FALSE}
@@ -2003,15 +2073,16 @@ for (i in seq_along(puberty_vars)) {
         color = if_else(!is.na(p_fdr) & p_fdr < 0.05, "#2166ac", "black"))
     ) |>
     kable(escape = FALSE,
-          col.names = c("Reactivity outcome", "b", "SE", "t", "p (raw)", "p (FDR)")) |>
-    kable_styling(bootstrap_options = "hover", full_width = FALSE) |>
+          col.names = italicize_stats(c("Reactivity outcome", "b", "SE", "t", "p (raw)", "p (FDR)")),
+          caption = paste0(puberty_labels[i], " (centered): simple regression on each reactivity outcome")) |>
+    apa_table(full_width = FALSE) |>
     print()
 }
 ```
 
 ## Scatter Plots: Puberty × Biomarker Reactivity
 
-```{r puberty-reactivity-scatter, results='asis', fig.width=10, fig.height=5}
+```{r puberty-reactivity-scatter, results='asis', fig.width=10, fig.height=5, fig.cap="Pubertal status vs. biomarker reactivity, by biomarker"}
 bio_react_labels <- c(
   crp_difference = "ΔCRP",
   il10_difference = "ΔIL-10",
@@ -2129,7 +2200,7 @@ timing_df |>
     age_menarche     = "Age at menarche (years)"
   )) |>
   kable(caption = "Pubertal timing descriptives") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ## Correlations: Timing × Reactivity
@@ -2178,9 +2249,9 @@ for (ms in unique(timing_joint_tbl$measure)) {
       mutate(p_fdr = cell_spec(p_fdr, bold = !is.na(p_fdr) & p_fdr < 0.05,
         color = if_else(!is.na(p_fdr) & p_fdr < 0.05, "#2166ac", "black"))) |>
       kable(escape = FALSE,
-            col.names = c("Reactivity outcome", "b", "SE", "t", "p (raw)", "p (FDR)"),
+            col.names = italicize_stats(c("Reactivity outcome", "b", "SE", "t", "p (raw)", "p (FDR)")),
             caption = paste("Reactivity ~", trm, "+ other term (both centered); FDR within measure × term")) |>
-      kable_styling(bootstrap_options = "hover", full_width = FALSE) |>
+      apa_table(full_width = FALSE) |>
       print()
   }
 }
@@ -2223,7 +2294,7 @@ timing_results_paragraph <- paste(sapply(timing_summary, function(s) {
 
 Effect of pubertal status (PUBcomp, centered) on each reactivity outcome, from the joint model above (`reactivity ~ pubertal status + age at session`, both centered). Points are the status coefficient; bars are 95% CI; blue marks FDR-significant effects (*p*~FDR~ < .05).
 
-```{r timing-status-forest, fig.width=10, fig.height=6.5}
+```{r timing-status-forest, fig.width=10, fig.height=6.5, fig.cap="Forest plot: effect of pubertal status on reactivity, controlling for age"}
 # Greek letters (Delta, beta) built via intToUtf8() and re-tagged as UTF-8
 # rather than relying on the literal characters already in reactivity_labels
 # surviving whatever locale this renders under -- under a "C" locale, R's
@@ -2278,7 +2349,7 @@ ggplot(forest_dat, aes(x = estimate, y = Reactivity, color = sig)) +
 
 The forest plot above shows the size of the age-adjusted pubertal-status effect; this shows the trend itself. Each panel is a **partial-residual (added-variable) plot**: both pubertal status and the reactivity outcome are first residualized on age at session, then plotted against each other. The slope of the fitted line in each panel is mathematically identical to that outcome's status coefficient in the joint model above -- this is what that coefficient looks like as a scatter of actual data rather than a single point estimate.
 
-```{r timing-status-trend, fig.width=13, fig.height=9}
+```{r timing-status-trend, fig.width=13, fig.height=9, fig.cap="Age-adjusted effect of pubertal status on reactivity: partial-residual plots, all 13 outcomes"}
 status_sig <- timing_joint_tbl |>
   filter(term == status_term_label) |>
   select(Reactivity, p_fdr) |>
@@ -2326,7 +2397,7 @@ ggplot(react_partial, aes(x = resid_status, y = resid_outcome)) +
 
 Same partial-residual plots as above, restricted to the `r sum(status_sig$sig == "FDR-significant (p < .05)")` outcomes that survived FDR correction -- a cleaner figure for highlighting just the significant status-beyond-age effects.
 
-```{r timing-status-trend-sig, fig.width=13, fig.height=3.5}
+```{r timing-status-trend-sig, fig.width=13, fig.height=3.5, fig.cap="Age-adjusted effect of pubertal status on reactivity: partial-residual plots, FDR-significant outcomes only"}
 react_partial_sig <- react_partial |> filter(sig == "FDR-significant (p < .05)")
 
 ggplot(react_partial_sig, aes(x = resid_status, y = resid_outcome)) +
@@ -2347,7 +2418,7 @@ ggplot(react_partial_sig, aes(x = resid_status, y = resid_outcome)) +
 
 Intercorrelations among the individual-difference predictors used across the puberty and psychosocial hypotheses: pubertal status (PUBcomp composite), age at menarche, perceived pubertal timing (PDS F5), age at session, BFNES (fear of negative evaluation), and CES-DC (depressive symptoms). This is not a predictor-vs-reactivity matrix (those are reported separately above and in Aim 3 below) -- it's the relationships among the predictors themselves, useful for spotting overlap/multicollinearity before interpreting single-predictor models one at a time.
 
-```{r predictors-corr-matrix, fig.width=9, fig.height=8}
+```{r predictors-corr-matrix, fig.width=9, fig.height=8, fig.cap="Correlation matrix: pubertal timing, age, and psychosocial predictors (X = not FDR-significant)"}
 predictors_df <- timing_df |>
   select(SampleID, PUBcomp, age_menarche, PDS_F5, age_at_session) |>
   left_join(bfnes, by = "SampleID") |>
@@ -2385,13 +2456,13 @@ predictors_fdr_mat |>
     cell_spec(xlab, bold = sig, color = if_else(sig, "#2166ac", "black"))
   })) |>
   kable(escape = FALSE,
-        caption = "P-values FDR-corrected across all 15 predictor pairs (bold = p_FDR < .05).") |>
-  kable_styling(bootstrap_options = "hover")
+        caption = "P-values FDR-corrected across all 15 predictor pairs (bold = p (FDR) < .05).") |>
+  apa_table()
 ```
 
 ## Scatter Plots: Timing × Biomarker Reactivity
 
-```{r timing-reactivity-scatter, results='asis', fig.width=10, fig.height=5}
+```{r timing-reactivity-scatter, results='asis', fig.width=10, fig.height=5, fig.cap="Pubertal timing predictor vs. biomarker reactivity, by biomarker"}
 bio_react_vars   <- names(bio_react_labels)
 
 for (tv in timing_vars) {
@@ -2480,11 +2551,11 @@ for (pv in all_pub_vars) {
       color = if_else(!is.na(x) & x < 0.05, "#2166ac", "black")
     ))) |>
     kable(format = "html", escape = FALSE,
-          col.names = c("Biomarker", "r", "p (FDR)", "r", "p (FDR)", "r", "p (FDR)", "r", "p (FDR)"),
+          col.names = italicize_stats(c("Biomarker", "r", "p (FDR)", "r", "p (FDR)", "r", "p (FDR)", "r", "p (FDR)")),
           caption   = paste0("Correlations: ", all_pub_label_map[[pv]],
-                             " ", intToUtf8(215), " biomarker levels (FDR-adjusted within immune/hormones, 16/12 tests pooling all 4 timepoints; bold = p_FDR < .05)")) |>
+                             " ", intToUtf8(215), " biomarker levels (FDR-adjusted within immune/hormones, 16/12 tests pooling all 4 timepoints; bold = p (FDR) < .05)")) |>
     add_header_above(c(" " = 1, "T1" = 2, "T2" = 2, "T3" = 2, "T4" = 2)) |>
-    kable_styling(bootstrap_options = "hover", full_width = FALSE) |>
+    apa_table(full_width = FALSE) |>
     as.character() |>
     cat()
 }
@@ -2530,17 +2601,17 @@ levels_joint_tbl |>
     x, bold = !is.na(x) & x < 0.05, color = if_else(!is.na(x) & x < 0.05, "#2166ac", "black")
   ))) |>
   kable(format = "html", escape = FALSE,
-        col.names = c("Biomarker", "b", "p (FDR)", "b", "p (FDR)", "b", "p (FDR)", "b", "p (FDR)"),
-        caption = "Effect of pubertal status on log biomarker level, controlling for age (FDR within immune/hormones; bold = p_FDR < .05)") |>
+        col.names = italicize_stats(c("Biomarker", "b", "p (FDR)", "b", "p (FDR)", "b", "p (FDR)", "b", "p (FDR)")),
+        caption = "Effect of pubertal status on log biomarker level, controlling for age (FDR within immune/hormones; bold = p (FDR) < .05)") |>
   add_header_above(c(" " = 1, "T1" = 2, "T2" = 2, "T3" = 2, "T4" = 2)) |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ### Trend Plot: Age-Adjusted Effect of Pubertal Status on Raw Biomarker Levels
 
 Same partial-residual approach as the reactivity trend plot above -- both pubertal status and each biomarker level are residualized on age at session (separately per timepoint), then plotted against each other. Rows are biomarkers, columns are timepoints (T1–T4).
 
-```{r puberty-levels-trend, fig.width=11, fig.height=12}
+```{r puberty-levels-trend, fig.width=11, fig.height=12, fig.cap="Age-adjusted effect of pubertal status on raw biomarker levels: partial-residual plots by biomarker and timepoint"}
 levels_sig <- levels_joint_tbl |>
   mutate(sig = ifelse(p_fdr < 0.05, "FDR-significant (p < .05)", "Not significant")) |>
   select(Biomarker, Timepoint, sig)
@@ -2601,7 +2672,7 @@ bfnes |>
     Max  = round(max(BFNES_total),  2)
   ) |>
   kable(caption = "BFNES descriptives") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ## FNE (BFNES) × Raw Biomarker Levels
@@ -2640,10 +2711,10 @@ bfnes_corr_tbl |>
     color = if_else(!is.na(x) & x < 0.05, "#2166ac", "black")
   ))) |>
   kable(format = "html", escape = FALSE,
-        col.names = c("Biomarker", "r", "p (FDR)", "r", "p (FDR)", "r", "p (FDR)", "r", "p (FDR)"),
-        caption   = paste0("Correlations: BFNES ", intToUtf8(215), " biomarker levels (FDR-adjusted; bold = p_FDR < .05)")) |>
+        col.names = italicize_stats(c("Biomarker", "r", "p (FDR)", "r", "p (FDR)", "r", "p (FDR)", "r", "p (FDR)")),
+        caption   = paste0("Correlations: BFNES ", intToUtf8(215), " biomarker levels (FDR-adjusted; bold = p (FDR) < .05)")) |>
   add_header_above(c(" " = 1, "T1" = 2, "T2" = 2, "T3" = 2, "T4" = 2)) |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ```{r bfnes-levels-results-vals, echo=FALSE, include=FALSE}
@@ -2695,9 +2766,9 @@ bfnes_react_corrs |>
   select(Reactivity, n, r, p_fdr) |>
   mutate(p_fdr = cell_spec(p_fdr, bold = !is.na(p_fdr) & p_fdr < 0.05,
     color = if_else(!is.na(p_fdr) & p_fdr < 0.05, "#2166ac", "black"))) |>
-  kable(escape = FALSE, col.names = c("Reactivity outcome", "n", "r", "p (FDR)"),
-        caption = "Correlations: BFNES × reactivity (pairwise-complete n per outcome; FDR-adjusted; bold = p_FDR < .05)") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  kable(escape = FALSE, col.names = italicize_stats(c("Reactivity outcome", "n", "r", "p (FDR)")),
+        caption = "Correlations: BFNES × reactivity (pairwise-complete n per outcome; FDR-adjusted; bold = p (FDR) < .05)") |>
+  apa_table(full_width = FALSE)
 ```
 
 ```{r bfnes-reactivity-results-vals, echo=FALSE, include=FALSE}
@@ -2739,7 +2810,7 @@ dep |>
     Max  = round(max(CESD_total,  na.rm = TRUE), 2)
   ) |>
   kable(caption = "CES-DC descriptives") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ## CES-DC (Depressive Symptoms) × Raw Biomarker Levels
@@ -2781,10 +2852,10 @@ dep_corr_tbl |>
     color = if_else(!is.na(x) & x < 0.05, "#2166ac", "black")
   ))) |>
   kable(format = "html", escape = FALSE,
-        col.names = c("Biomarker", "r", "p (FDR)", "r", "p (FDR)", "r", "p (FDR)", "r", "p (FDR)"),
-        caption   = paste0("Correlations: CES-DC ", intToUtf8(215), " biomarker levels (FDR-adjusted p-values; bold = p_FDR < .05)")) |>
+        col.names = italicize_stats(c("Biomarker", "r", "p (FDR)", "r", "p (FDR)", "r", "p (FDR)", "r", "p (FDR)")),
+        caption   = paste0("Correlations: CES-DC ", intToUtf8(215), " biomarker levels (FDR-adjusted p-values; bold = p (FDR) < .05)")) |>
   add_header_above(c(" " = 1, "T1" = 2, "T2" = 2, "T3" = 2, "T4" = 2)) |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ```{r dep-levels-results-vals, echo=FALSE, include=FALSE}
@@ -2831,9 +2902,9 @@ dep_react_corrs |>
   select(Reactivity, n, r, p_fdr) |>
   mutate(p_fdr = cell_spec(p_fdr, bold = !is.na(p_fdr) & p_fdr < 0.05,
     color = if_else(!is.na(p_fdr) & p_fdr < 0.05, "#2166ac", "black"))) |>
-  kable(escape = FALSE, col.names = c("Reactivity outcome", "n", "r", "p (FDR)"),
-        caption = "Correlations: CES-DC × reactivity (pairwise-complete n per outcome; FDR-adjusted; bold = p_FDR < .05)") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  kable(escape = FALSE, col.names = italicize_stats(c("Reactivity outcome", "n", "r", "p (FDR)")),
+        caption = "Correlations: CES-DC × reactivity (pairwise-complete n per outcome; FDR-adjusted; bold = p (FDR) < .05)") |>
+  apa_table(full_width = FALSE)
 ```
 
 ```{r dep-reactivity-results-vals, echo=FALSE, include=FALSE}
@@ -2929,7 +3000,7 @@ saliva_timing |>
     "elapsed_T4" ~ "T1 → T4"
   )) |>
   kable(caption = "Minutes elapsed from T1 to each subsequent sample") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ## Elapsed Time as Covariate in Hormone Models
@@ -2967,10 +3038,10 @@ map_dfr(hormone_vars, function(hv) {
     color = if_else(x < 0.05, "#2166ac", "black")
   ))) |>
   kable(format = "html", escape = FALSE,
-        col.names = c("Hormone", "r", "p", "r", "p", "r", "p"),
+        col.names = italicize_stats(c("Hormone", "r", "p", "r", "p", "r", "p")),
         caption = paste0("Elapsed minutes from T1 ", intToUtf8(215), " hormone level")) |>
   add_header_above(c(" " = 1, "T2" = 2, "T3" = 2, "T4" = 2)) |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE) |>
+  apa_table(full_width = FALSE) |>
   print()
 ```
 
@@ -2989,7 +3060,7 @@ wake_time |>
     Max  = round(max(hours_since_wake), 1)
   ) |>
   kable(caption = "Hours elapsed from waking to T1 sample collection") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ```{r wake-hormone-corr}
@@ -3024,9 +3095,9 @@ map_dfr(names(hormone_wake_outcomes), function(hv) {
   mutate(p = cell_spec(p, bold = p < 0.05,
     color = if_else(p < 0.05, "#2166ac", "black"))) |>
   kable(escape = FALSE,
-        col.names = c("Outcome", "n", "r", "p"),
+        col.names = italicize_stats(c("Outcome", "n", "r", "p")),
         caption = "Correlations: hours since waking × sex steroid hormone levels and reactivity") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ---
@@ -3037,7 +3108,7 @@ Circle size and color reflect correlation magnitude (red = negative, blue = posi
 
 ## Bioreactivity Measures
 
-```{r corr-bioreact, fig.width=10, fig.height=9}
+```{r corr-bioreact, fig.width=10, fig.height=9, fig.cap="Correlation matrix: bioreactivity measures"}
 bio_react_cols <- c(
   "task_rs_hr_diff", "conn_dis_hr_diff", "conn_other_hr_diff", "conn_rest_hr_diff",
   "crp_difference", "il10_difference", "il6_difference", "tnfa_difference",
@@ -3059,7 +3130,7 @@ plot_sig_corrplot(bio_rc2$r, bio_rc2$P, "Bioreactivity Measures")
 
 ## Outcome Measures
 
-```{r corr-outcomes, fig.width=6, fig.height=5}
+```{r corr-outcomes, fig.width=6, fig.height=5, fig.cap="Correlation matrix: outcome measures (subjective stress, CES-DC, BFNES)"}
 outcome_mat <- all_difference |>
   select(SampleID, subj_scsd_difference, subj_scother_difference) |>
   left_join(dep   |> select(SampleID, CESD_total),  by = "SampleID") |>
@@ -3075,7 +3146,7 @@ plot_sig_corrplot(outcome_rc$r, outcome_rc$P, "Outcome Measures")
 
 ## All Measures
 
-```{r corr-all, fig.width=12, fig.height=11}
+```{r corr-all, fig.width=12, fig.height=11, fig.cap="Correlation matrix: all reactivity and outcome measures combined"}
 all_measures_mat <- all_difference |>
   left_join(dep   |> select(SampleID, CESD_total),  by = "SampleID") |>
   left_join(bfnes |> select(SampleID, BFNES_total), by = "SampleID") |>
@@ -3095,7 +3166,7 @@ plot_sig_corrplot(all_rc$r, all_rc$P, "All Measures")
 *Raw (non-reactivity) counterparts of the measures above: HR by condition (not difference
 scores), and each biomarker's T1 (baseline) concentration.*
 
-```{r corr-raw-biohr, fig.width=10, fig.height=9}
+```{r corr-raw-biohr, fig.width=10, fig.height=9, fig.cap="Correlation matrix: raw HR (by condition) and raw biomarker T1 levels"}
 raw_biohr_df <- hr_final_wide |>
   select(SampleID, resting_avg, Task, `Self-Connected`, `Self-Disconnected`, Other, `Fixation-Cross`) |>
   left_join(sos_crp_wide       |> select(SampleID, CRP_log_1), by = "SampleID") |>
@@ -3127,7 +3198,7 @@ plot_sig_corrplot(raw_biohr_rc$r, raw_biohr_rc$P, "Raw HR & Biomarker (T1) Measu
 biomarker at all four timepoints (T1–T4), alongside raw HR by condition and raw subjective
 stress ratings by condition — all raw values, no reactivity/difference scores.*
 
-```{r corr-raw-biomarker-alltp, fig.width=20, fig.height=19}
+```{r corr-raw-biomarker-alltp, fig.width=20, fig.height=19, fig.cap="Correlation matrix: raw biomarker levels (all timepoints), raw HR, and raw subjective stress"}
 raw_biomarker_tp_cols <- c(
   paste0("CRP_log_", 1:4),
   paste0("IL10_log_", 1:4),
@@ -3194,7 +3265,7 @@ plot_sig_corrplot(raw_alltp_rc$r, raw_alltp_rc$P, "Raw Biomarker Levels (T1-T4),
 *Raw (non-reactivity) counterparts: subjective stress ratings by condition (not difference
 scores), CES-DC, and BFNES.*
 
-```{r corr-raw-outcomes, fig.width=7, fig.height=6}
+```{r corr-raw-outcomes, fig.width=7, fig.height=6, fig.cap="Correlation matrix: raw outcome measures (subjective stress, CES-DC, BFNES)"}
 raw_outcome_mat <- sos_subj_stress |>
   select(SampleID, selfconnected_subj_stress, selfdisconnected_subj_stress, other_subj_stress) |>
   left_join(dep   |> select(SampleID, CESD_total),  by = "SampleID") |>
@@ -3213,7 +3284,7 @@ plot_sig_corrplot(raw_outcome_rc$r, raw_outcome_rc$P, "Raw Outcome Measures")
 *Age, BMI, hours since waking, pubertal status (PUBcomp), age at menarche, and PDS F5
 perceived timing — all as raw values (not reactivity or centered/residualized versions).*
 
-```{r corr-raw-demo-puberty, fig.width=8, fig.height=7}
+```{r corr-raw-demo-puberty, fig.width=8, fig.height=7, fig.cap="Correlation matrix: raw puberty and demographic measures"}
 raw_demo_puberty_df <- static_covariates |>
   left_join(sos_puberty |> select(SampleID, PUBcomp),               by = "SampleID") |>
   left_join(timing_df   |> select(SampleID, age_menarche, PDS_F5),  by = "SampleID")
@@ -3238,7 +3309,7 @@ plot_sig_corrplot(raw_demo_puberty_rc$r, raw_demo_puberty_rc$P, "Raw Puberty & D
 *Everything above combined into a single matrix: raw HR, raw biomarker T1 levels, raw
 subjective stress, CES-DC, BFNES, and raw puberty/demographic variables.*
 
-```{r corr-raw-all, fig.width=16, fig.height=15}
+```{r corr-raw-all, fig.width=16, fig.height=15, fig.cap="Correlation matrix: all raw measures combined"}
 all_raw_df <- raw_biohr_df |>
   left_join(
     sos_subj_stress |> select(SampleID, selfconnected_subj_stress, selfdisconnected_subj_stress, other_subj_stress),
@@ -3308,7 +3379,7 @@ tibble::tribble(
   "BFNES × reactivity",               "Subjective",                               "2"
 ) |>
   kable(caption = "FDR correction family definitions across all analyses") |>
-  kable_styling(bootstrap_options = c("hover", "striped"), full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 *Note: the exploratory end-of-document correlation matrices (Bioreactivity Measures, Outcome Measures, All Measures, and their raw-variable counterparts — Raw HR & Biomarker (T1) Measures, Raw Biomarker Levels (All Timepoints) HR & Subjective Stress, Raw Outcome Measures, Raw Puberty & Demographic Measures, All Raw Measures) display raw uncorrected p-values — they are descriptive only and not used for inference.*
@@ -3345,7 +3416,7 @@ tibble::tribble(
   "BFNES × reactivity",         nrow(bfnes_react_corrs),n_bf_rx_raw,  n_bf_rx_fdr,   n_bf_rx_raw   - n_bf_rx_fdr
 ) |>
   kable(caption = "Raw vs. FDR-corrected significant tests per analysis") |>
-  kable_styling(bootstrap_options = c("hover", "striped"), full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ## Matrix vs. Table Agreement: Puberty
@@ -3427,7 +3498,7 @@ if (nrow(changed) == 0) {
   ) |>
     arrange(`p (FDR)`) |>
     kable(caption = "Cells where raw p < .05 but FDR p ≥ .05 (or vice versa)") |>
-    kable_styling(bootstrap_options = "hover", full_width = FALSE)
+    apa_table(full_width = FALSE)
 }
 ```
 
@@ -3499,9 +3570,9 @@ print(responder_summary, n = 20)
 
 responder_summary |>
   select(biomarker, n_responder, pct_responder, n_nonresponder, n_excluded) |>
-  kable(col.names = c("Biomarker", "n Responders", "% Responders", "n Non-responders", "n Excluded"),
+  kable(escape = FALSE, col.names = italicize_stats(c("Biomarker", "n Responders", "% Responders", "n Non-responders", "n Excluded")),
         caption = "Responder classification counts by biomarker (any post-baseline sample > T1)") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ```{r resp-vs-peak, echo=FALSE}
@@ -3532,10 +3603,10 @@ resp_vs_peak <- responder_df |>
 print(resp_vs_peak, n = 20)
 
 resp_vs_peak |>
-  kable(col.names = c("Biomarker", "n (both defined)", "n Responders (any-increase)",
-                       "...also peak-reactive (T3/T4 > T1)", "% overlap"),
+  kable(escape = FALSE, col.names = italicize_stats(c("Biomarker", "n (both defined)", "n Responders (any-increase)",
+                       "...also peak-reactive (T3/T4 > T1)", "% overlap")),
         caption = "How the lenient any-increase responder definition compares to the peak-based (T3/T4 max) reactivity criterion") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ```{r resp-counts-results-vals, echo=FALSE, include=FALSE}
@@ -3656,10 +3727,10 @@ cesdc_results |>
   mutate(p_fdr = cell_spec(p_fdr, bold = !is.na(p_fdr) & p_fdr < 0.05,
     color = if_else(!is.na(p_fdr) & p_fdr < 0.05, "#2166ac", "black"))) |>
   kable(escape = FALSE,
-        col.names = c("Biomarker", "n Resp", "n Non-resp", "M Resp", "SD Resp", "M Non-resp", "SD Non-resp",
-                       "t (Welch)", "df", "p (Welch)", "p (Wilcoxon)", "Cohen's d", "d 95% LL", "d 95% UL", "p (FDR)"),
+        col.names = italicize_stats(c("Biomarker", "n Resp", "n Non-resp", "M Resp", "SD Resp", "M Non-resp", "SD Non-resp",
+                       "t (Welch)", "df", "p (Welch)", "p (Wilcoxon)", "Cohen's d", "d 95% LL", "d 95% UL", "p (FDR)")),
         caption = "CES-DC total score by responder status, per biomarker (FDR within the 7 biomarkers)") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ```{r resp-cesdc-plot, fig.width=10, fig.height=6}
@@ -3722,11 +3793,11 @@ exploratory_results |>
   mutate(p_fdr = cell_spec(p_fdr, bold = !is.na(p_fdr) & p_fdr < 0.05,
     color = if_else(!is.na(p_fdr) & p_fdr < 0.05, "#2166ac", "black"))) |>
   kable(escape = FALSE,
-        col.names = c("Outcome", "Biomarker", "n Resp", "n Non-resp", "M Resp", "SD Resp",
+        col.names = italicize_stats(c("Outcome", "Biomarker", "n Resp", "n Non-resp", "M Resp", "SD Resp",
                        "M Non-resp", "SD Non-resp", "t (Welch)", "df", "p (Welch)", "p (Wilcoxon)",
-                       "Cohen's d", "p (FDR)"),
+                       "Cohen's d", "p (FDR)")),
         caption = "Exploratory group comparisons: BFNES, pubertal status, age, and BMI by responder status (FDR within each outcome, across the 7 biomarkers)") |>
-  kable_styling(bootstrap_options = "hover", full_width = FALSE)
+  apa_table(full_width = FALSE)
 ```
 
 ```{r resp-exploratory-results-vals, echo=FALSE, include=FALSE}

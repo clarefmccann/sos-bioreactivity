@@ -64,7 +64,8 @@ pacman::p_load(
   "Hmisc",
   "corrplot",
   "knitr",
-  "kableExtra"
+  "kableExtra",
+  "psych"
 )
 
 proj_path <- here()
@@ -228,8 +229,8 @@ hr_conditions_avg <- hr_conditions_raw |>
   summarise(mean_hr = mean(hr, na.rm = TRUE), .groups = "drop") |>
   filter(!is.na(task_condition), task_condition != "NA") |>
   mutate(task_condition = factor(task_condition,
-    levels = c("1", "2", "3", "R"),
-    labels = c("Other", "Self-Disconnected", "Self-Connected", "Fixation-Cross")
+    levels = c("3", "2", "1", "R"),
+    labels = c("Self-Connected", "Self-Disconnected", "Other", "Fixation-Cross")
   )) |>
   filter(!id %in% hr_exclude)
 
@@ -3026,6 +3027,129 @@ dep_t2_index_dependent_text <- if (nrow(dep_t2_index_dependent) == 0) NULL else
 ```
 
 **Results.** Full head-to-head values for CES-DC × all 13 reactivity outcomes (exploratory aim), under both peak definitions, are shown above. `r if (!is.null(dep_t2_index_dependent_text)) paste0("The association", if (nrow(dep_t2_index_dependent) != 1) "s" else "", " between CES-DC and ", dep_t2_index_dependent_text, " should be considered peak-timepoint-dependent.") else "No association that was significant under the T3/T4-eligible peak definition lost significance under the T2-eligible one."`
+
+## S6: HAPPY (BOLD-Derived) Heart Rate Validation
+
+*Rationale.* The primary heart rate measures (Aim 1b) come from dedicated physio recording during
+the scan. Separately, HAPPY (a method for extracting a pulse/heart-rate signal directly from the
+BOLD fMRI time series itself) was used to derive resting and task heart rate for most participants,
+including many of the early participants who lack physio-recorded HR entirely (see the HR Subsample
+Comparison and Missing Data Summary sections above -- physio HR monitoring was not part of the
+protocol until several months into data collection). HAPPY currently provides only overall
+rest-vs-task heart rate, not the within-task condition breakdown (Self-Connected/Self-Disconnected/
+Other/Fixation-Cross). This section (1) checks agreement between the two methods in the participants
+who have both, and (2) re-runs the primary task-vs-rest comparison using the full HAPPY sample, which
+is substantially larger than the physio-only sample.
+
+```{r s6-happy-setup, echo=FALSE}
+fmt_p_txt <- function(p) ifelse(p < .001, "< .001", paste0("= ", round(p, 3)))
+
+happy_raw <- read.csv(file.path(proj_path, "data", "happy_hr_subjects.csv")) |>
+  mutate(
+    SampleID = sub("^sub-", "", subject),
+    SampleID = case_when(
+      SampleID == "SOS068" ~ "TAG068",
+      SampleID == "SOS076" ~ "TAG076",
+      TRUE ~ SampleID
+    )
+  ) |>
+  select(SampleID, hr_rest, hr_task, hr_task_minus_rest, n_rest_runs, n_flagged_runs) |>
+  filter(SampleID %in% biomarker_ids)
+
+happy_merged <- hr_final_wide |>
+  select(SampleID, resting_avg, Task, task_rs_hr_diff) |>
+  inner_join(happy_raw, by = "SampleID") |>
+  filter(!is.na(resting_avg), !is.na(Task))
+```
+
+### Reliability: Original vs. HAPPY
+
+```{r s6-happy-reliability, echo=FALSE}
+run_icc_row <- function(orig, happy, label) {
+  d <- data.frame(orig = orig, happy = happy) |> filter(!is.na(orig), !is.na(happy))
+  icc_fit <- psych::ICC(d)
+  icc2    <- icc_fit$results[icc_fit$results$type == "ICC2", ]
+  diffs   <- d$happy - d$orig
+  tibble(
+    Measure  = label,
+    n        = nrow(d),
+    r        = round(cor(d$orig, d$happy), 3),
+    ICC      = round(icc2$ICC, 3),
+    `ICC 95% CI` = paste0("[", round(icc2$`lower bound`, 3), ", ", round(icc2$`upper bound`, 3), "]"),
+    `Mean bias (HAPPY - original)` = round(mean(diffs), 2),
+    `Limits of agreement` = paste0("[", round(mean(diffs) - 1.96 * sd(diffs), 2), ", ",
+                                     round(mean(diffs) + 1.96 * sd(diffs), 2), "]")
+  )
+}
+
+happy_reliability_tbl <- bind_rows(
+  run_icc_row(happy_merged$resting_avg,     happy_merged$hr_rest,              "Resting HR"),
+  run_icc_row(happy_merged$Task,            happy_merged$hr_task,              "Task HR"),
+  run_icc_row(happy_merged$task_rs_hr_diff, happy_merged$hr_task_minus_rest,   "Task − Rest (reactivity)")
+)
+
+happy_reliability_tbl |>
+  kable(caption = "Agreement between original (physio) and HAPPY (BOLD-derived) heart rate") |>
+  apa_table(full_width = FALSE)
+```
+
+```{r s6-happy-reliability-results, echo=FALSE, include=FALSE}
+happy_n          <- happy_reliability_tbl$n[1]
+happy_rest_icc   <- happy_reliability_tbl$ICC[happy_reliability_tbl$Measure == "Resting HR"]
+happy_task_icc   <- happy_reliability_tbl$ICC[happy_reliability_tbl$Measure == "Task HR"]
+happy_react_icc  <- happy_reliability_tbl$ICC[happy_reliability_tbl$Measure == "Task − Rest (reactivity)"]
+happy_replicate_tt <- t.test(happy_merged$hr_task, happy_merged$hr_rest, paired = TRUE)
+```
+
+**Results.** Of the `r length(biomarker_ids)`-person biomarker sample, `r happy_n` have heart rate from both methods. Resting HR (ICC = `r happy_rest_icc`) and task HR (ICC = `r happy_task_icc`) show excellent agreement; the task-minus-rest reactivity score, which compounds measurement error from both components, is somewhat lower but still excellent (ICC = `r happy_react_icc`). Bias is small in absolute terms for all three measures (see table). As a further check, the primary Aim 1b finding replicates directly in the HAPPY data for this same subsample: task HR significantly exceeds resting HR (*t*(`r unname(happy_replicate_tt$parameter)`) = `r round(unname(happy_replicate_tt$statistic), 2)`, *p* `r fmt_p_txt(happy_replicate_tt$p.value)`, mean diff = `r round(unname(happy_replicate_tt$estimate), 2)` bpm).
+
+### Task vs. Rest Using the Full HAPPY Sample
+
+```{r s6-happy-fullsample, echo=FALSE}
+happy_full_tbl <- bind_rows(
+  happy_raw |> filter(!is.na(hr_rest), !is.na(hr_task)) |>
+    summarise(Sample = "Full available HAPPY sample", n = n(),
+              `Resting HR M (SD)` = paste0(round(mean(hr_rest), 2), " (", round(sd(hr_rest), 2), ")"),
+              `Task HR M (SD)`    = paste0(round(mean(hr_task), 2), " (", round(sd(hr_task), 2), ")"),
+              t = t.test(hr_task, hr_rest, paired = TRUE)$statistic,
+              df = t.test(hr_task, hr_rest, paired = TRUE)$parameter,
+              p = t.test(hr_task, hr_rest, paired = TRUE)$p.value,
+              `Mean diff (bpm)` = t.test(hr_task, hr_rest, paired = TRUE)$estimate),
+  happy_raw |> filter(!is.na(hr_rest), !is.na(hr_task), n_flagged_runs == 0) |>
+    summarise(Sample = "Excluding any HAPPY-flagged runs", n = n(),
+              `Resting HR M (SD)` = paste0(round(mean(hr_rest), 2), " (", round(sd(hr_rest), 2), ")"),
+              `Task HR M (SD)`    = paste0(round(mean(hr_task), 2), " (", round(sd(hr_task), 2), ")"),
+              t = t.test(hr_task, hr_rest, paired = TRUE)$statistic,
+              df = t.test(hr_task, hr_rest, paired = TRUE)$parameter,
+              p = t.test(hr_task, hr_rest, paired = TRUE)$p.value,
+              `Mean diff (bpm)` = t.test(hr_task, hr_rest, paired = TRUE)$estimate)
+) |>
+  mutate(across(c(t, `Mean diff (bpm)`), \(x) round(x, 3)),
+         p_numeric = p,
+         p = if_else(p < 0.001,
+                      if (knitr::is_html_output()) "&lt; .001" else "< .001",
+                      as.character(round(p, 4))))
+
+happy_full_tbl |>
+  select(-p_numeric) |>
+  kable(escape = FALSE, col.names = italicize_stats(c("Sample", "n", "Resting HR M (SD)", "Task HR M (SD)", "t", "df", "p", "Mean diff (bpm)")),
+        caption = "Task vs. rest heart rate using the full HAPPY sample (of the biomarker sample)") |>
+  apa_table(full_width = FALSE)
+```
+
+```{r s6-happy-fullsample-results, echo=FALSE, include=FALSE}
+happy_full_n <- happy_full_tbl$n[happy_full_tbl$Sample == "Full available HAPPY sample"]
+happy_full_tt_p <- happy_full_tbl$p_numeric[happy_full_tbl$Sample == "Full available HAPPY sample"]
+happy_outlier_tt <- t.test(
+  (happy_raw |> filter(!is.na(hr_rest), !is.na(hr_task), SampleID != "TAG045"))$hr_task,
+  (happy_raw |> filter(!is.na(hr_rest), !is.na(hr_task), SampleID != "TAG045"))$hr_rest,
+  paired = TRUE
+)
+```
+
+**Results.** Using the full available HAPPY sample (N = `r happy_full_n`) -- substantially larger than the `r sum(!is.na(hr_final_wide$resting_avg) & !is.na(hr_final_wide$Task))`-person physio-only sample, since HAPPY recovers heart rate for most of the early participants who predate physio HR monitoring -- task HR is significantly higher than resting HR (*p* `r fmt_p_txt(happy_full_tt_p)`; see table). The conclusion is unchanged whether HAPPY-flagged runs are excluded or not. One participant, TAG045, is a clear outlier on the task-minus-rest difference (+18.6 bpm, versus the next most extreme value of +9.3) and has only a single resting run plus one flagged run; excluding TAG045 specifically (rather than all flagged-run participants) gives *t*(`r unname(happy_outlier_tt$parameter)`) = `r round(unname(happy_outlier_tt$statistic), 2)`, *p* `r fmt_p_txt(happy_outlier_tt$p.value)`, mean diff = `r round(unname(happy_outlier_tt$estimate), 2)` bpm -- the same conclusion either way.
+
+*Note on scope.* HAPPY currently provides only overall resting and task heart rate, not the within-task condition breakdown (Self-Connected/Self-Disconnected/Other/Fixation-Cross); the within-task comparisons in Aim 1b have no HAPPY counterpart yet.
 
 ## Cross-Check
 

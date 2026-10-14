@@ -294,8 +294,8 @@ hr_conditions_avg <- hr_conditions_raw |>
   summarise(mean_hr = mean(hr, na.rm = TRUE), .groups = "drop") |>
   filter(!is.na(task_condition), task_condition != "NA") |>
   mutate(task_condition = factor(task_condition,
-    levels = c("1", "2", "3", "R"),
-    labels = c("Other", "Self-Disconnected", "Self-Connected", "Fixation-Cross")
+    levels = c("3", "2", "1", "R"),
+    labels = c("Self-Connected", "Self-Disconnected", "Other", "Fixation-Cross")
   )) |>
   filter(!id %in% hr_exclude)
 

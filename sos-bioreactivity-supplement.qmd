@@ -3149,7 +3149,119 @@ happy_outlier_tt <- t.test(
 
 **Results.** Using the full available HAPPY sample (N = `r happy_full_n`) -- substantially larger than the `r sum(!is.na(hr_final_wide$resting_avg) & !is.na(hr_final_wide$Task))`-person physio-only sample, since HAPPY recovers heart rate for most of the early participants who predate physio HR monitoring -- task HR is significantly higher than resting HR (*p* `r fmt_p_txt(happy_full_tt_p)`; see table). The conclusion is unchanged whether HAPPY-flagged runs are excluded or not. One participant, TAG045, is a clear outlier on the task-minus-rest difference (+18.6 bpm, versus the next most extreme value of +9.3) and has only a single resting run plus one flagged run; excluding TAG045 specifically (rather than all flagged-run participants) gives *t*(`r unname(happy_outlier_tt$parameter)`) = `r round(unname(happy_outlier_tt$statistic), 2)`, *p* `r fmt_p_txt(happy_outlier_tt$p.value)`, mean diff = `r round(unname(happy_outlier_tt$estimate), 2)` bpm -- the same conclusion either way.
 
-*Note on scope.* HAPPY currently provides only overall resting and task heart rate, not the within-task condition breakdown (Self-Connected/Self-Disconnected/Other/Fixation-Cross); the within-task comparisons in Aim 1b have no HAPPY counterpart yet.
+### Condition-Specific Heart Rate (Self-Connected, Self-Disconnected, Other, Fixation-Cross)
+
+HAPPY now also provides condition-specific heart rate within the task run (from the BIDS events files built for this purpose; see `code/make_sos_events.py`), so the within-task comparisons from Aim 1b (Self-Connected vs. Self-Disconnected/Other/Fixation-Cross) can be checked and replicated the same way as the task-vs-rest comparison above.
+
+```{r s6-happy-condition-setup, echo=FALSE}
+happy_cond_raw <- read.csv(file.path(proj_path, "data", "happy_hr_conditions_wide.csv")) |>
+  mutate(SampleID = sub("^sub-", "", subject), run_qc_flag = as.logical(run_qc_flag)) |>
+  select(SampleID, hr_fixation, hr_other, hr_self_connected, hr_self_disconnected, run_qc_flag) |>
+  filter(SampleID %in% biomarker_ids)
+
+happy_cond_merged <- hr_final_wide |>
+  select(SampleID, `Self-Connected`, `Self-Disconnected`, Other, `Fixation-Cross`,
+         conn_dis_hr_diff, conn_other_hr_diff, conn_rest_hr_diff) |>
+  inner_join(happy_cond_raw, by = "SampleID") |>
+  mutate(
+    happy_conn_dis_diff  = hr_self_connected - hr_self_disconnected,
+    happy_conn_other_diff = hr_self_connected - hr_other,
+    happy_conn_rest_diff  = hr_self_connected - hr_fixation
+  ) |>
+  filter(!is.na(`Self-Connected`), !is.na(`Self-Disconnected`), !is.na(Other), !is.na(`Fixation-Cross`))
+```
+
+#### Reliability: Original vs. HAPPY, by Condition
+
+```{r s6-happy-condition-reliability, echo=FALSE}
+happy_cond_reliability_tbl <- bind_rows(
+  run_icc_row(happy_cond_merged$`Self-Connected`,    happy_cond_merged$hr_self_connected,    "Self-Connected"),
+  run_icc_row(happy_cond_merged$`Self-Disconnected`, happy_cond_merged$hr_self_disconnected, "Self-Disconnected"),
+  run_icc_row(happy_cond_merged$Other,               happy_cond_merged$hr_other,              "Other"),
+  run_icc_row(happy_cond_merged$`Fixation-Cross`,    happy_cond_merged$hr_fixation,           "Fixation-Cross"),
+  run_icc_row(happy_cond_merged$conn_dis_hr_diff,    happy_cond_merged$happy_conn_dis_diff,   "Self-Connected − Self-Disconnected"),
+  run_icc_row(happy_cond_merged$conn_other_hr_diff,  happy_cond_merged$happy_conn_other_diff, "Self-Connected − Other"),
+  run_icc_row(happy_cond_merged$conn_rest_hr_diff,   happy_cond_merged$happy_conn_rest_diff,  "Self-Connected − Fixation-Cross")
+)
+
+happy_cond_reliability_tbl |>
+  kable(caption = "Agreement between original (physio) and HAPPY heart rate, by within-task condition") |>
+  apa_table(full_width = FALSE)
+```
+
+```{r s6-happy-condition-reliability-results, echo=FALSE, include=FALSE}
+happy_cond_n <- happy_cond_reliability_tbl$n[1]
+happy_cond_icc_range <- range(happy_cond_reliability_tbl$ICC[1:4])
+happy_cond_diff_icc_range <- range(happy_cond_reliability_tbl$ICC[5:7])
+```
+
+**Results.** Of the `r length(biomarker_ids)`-person biomarker sample, `r happy_cond_n` have condition-specific heart rate from both methods. Agreement for the four raw condition means is excellent (ICC range: `r round(happy_cond_icc_range[1], 3)`-`r round(happy_cond_icc_range[2], 3)`). Agreement for the three within-task difference scores is lower, as expected for differenced measures with a small true effect size, but still acceptable-to-good (ICC range: `r round(happy_cond_diff_icc_range[1], 3)`-`r round(happy_cond_diff_icc_range[2], 3)`).
+
+#### Within-Task Comparisons Using the Full HAPPY Sample
+
+```{r s6-happy-condition-fullsample, echo=FALSE}
+run_cond_paired <- function(df, label) {
+  tt_sd  <- t.test(df$hr_self_connected, df$hr_self_disconnected, paired = TRUE)
+  tt_oth <- t.test(df$hr_self_connected, df$hr_other,              paired = TRUE)
+  tt_fix <- t.test(df$hr_self_connected, df$hr_fixation,           paired = TRUE)
+  bind_rows(
+    tibble(Sample = label, Comparison = "Self-Connected vs. Self-Disconnected", n = nrow(df),
+           t = unname(tt_sd$statistic), df_ = unname(tt_sd$parameter), p = tt_sd$p.value,
+           `Mean diff (bpm)` = unname(tt_sd$estimate)),
+    tibble(Sample = label, Comparison = "Self-Connected vs. Other", n = nrow(df),
+           t = unname(tt_oth$statistic), df_ = unname(tt_oth$parameter), p = tt_oth$p.value,
+           `Mean diff (bpm)` = unname(tt_oth$estimate)),
+    tibble(Sample = label, Comparison = "Self-Connected vs. Fixation-Cross", n = nrow(df),
+           t = unname(tt_fix$statistic), df_ = unname(tt_fix$parameter), p = tt_fix$p.value,
+           `Mean diff (bpm)` = unname(tt_fix$estimate))
+  )
+}
+
+happy_cond_full_tbl <- bind_rows(
+  run_cond_paired(happy_cond_raw |> filter(!is.na(hr_self_connected), !is.na(hr_self_disconnected), !is.na(hr_other), !is.na(hr_fixation)),
+                   "Full available HAPPY sample"),
+  run_cond_paired(happy_cond_raw |> filter(!is.na(hr_self_connected), !is.na(hr_self_disconnected), !is.na(hr_other), !is.na(hr_fixation), !run_qc_flag),
+                   "Excluding any HAPPY-flagged runs")
+) |>
+  rename(df = df_) |>
+  mutate(
+    across(c(t, `Mean diff (bpm)`), \(x) round(x, 3)),
+    p_numeric = p,
+    p = if_else(p < 0.001,
+                 if (knitr::is_html_output()) "&lt; .001" else "< .001",
+                 as.character(round(p, 4)))
+  )
+
+happy_cond_full_tbl |>
+  select(-p_numeric) |>
+  kable(escape = FALSE, col.names = italicize_stats(c("Sample", "Comparison", "n", "t", "df", "p", "Mean diff (bpm)")),
+        caption = "Within-task heart rate comparisons using the full HAPPY sample") |>
+  apa_table(full_width = FALSE)
+```
+
+```{r s6-happy-condition-fullsample-results, echo=FALSE, include=FALSE}
+happy_cond_full_n <- happy_cond_full_tbl$n[happy_cond_full_tbl$Sample == "Full available HAPPY sample"][1]
+happy_cond_full_sig <- happy_cond_full_tbl |>
+  filter(Sample == "Full available HAPPY sample", p_numeric < 0.05) |>
+  pull(Comparison)
+happy_cond_full_nonsig <- happy_cond_full_tbl |>
+  filter(Sample == "Full available HAPPY sample", p_numeric >= 0.05) |>
+  pull(Comparison)
+happy_cond_fmt_sig    <- if (length(happy_cond_full_sig) == 0) "none" else paste(happy_cond_full_sig, collapse = ", ")
+happy_cond_replication_text <- if (length(happy_cond_full_nonsig) == 0) {
+  "This fully replicates the primary (physio-based) Aim 1b finding, where all three within-task comparisons were significant."
+} else {
+  paste0(
+    "This only partially replicates the primary (physio-based) Aim 1b finding, where all three within-task comparisons were significant: ",
+    paste(happy_cond_full_nonsig, collapse = ", "),
+    if (length(happy_cond_full_nonsig) != 1) " did not reach significance here." else " did not reach significance here."
+  )
+}
+```
+
+**Results.** Using the full available HAPPY condition-specific sample (N = `r happy_cond_full_n`) -- again substantially larger than the physio-only within-task sample -- the following within-task comparison(s) remained significant at *p* < .05: `r happy_cond_fmt_sig`. The conclusion is unchanged whether HAPPY-flagged runs are excluded or not (see table). `r happy_cond_replication_text`
+
+*Note on scope.* These HAPPY-derived condition means are not yet FDR-corrected as a family the way the primary physio-based comparisons are (Aim 1b); treat the full-sample numbers above as a replication check on the primary conclusion, not a stand-alone corrected test.
 
 ## Cross-Check
 

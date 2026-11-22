@@ -85,6 +85,52 @@ imap_dfr <- purrr::imap_dfr
 # otherwise-unstyled kables. All downstream cell_spec()/kable_styling()/
 # row_spec() calls are unchanged — they resolve to these wrappers instead of
 # the kableExtra originals.
+# One p-value style for every report table: no leading zero, three decimals,
+# "< .001". The kable() wrapper below applies it to p-value columns, found by
+# header, and to all cells of p-value matrix tables, found by caption. Cell
+# styling and any * significance marker are kept.
+fmt_p_value <- function(p) {
+  ifelse(is.na(p), NA_character_,
+         ifelse(p < .001, "< .001", sub("^0", "", sprintf("%.3f", p))))
+}
+
+format_p_cells <- function(x) {
+  pat <- "(^|>|\\*\\*)\\s*([0-9]*\\.?[0-9]+(?:[eE]-?[0-9]+)?)(\\*{0,3})\\s*(<|\\*\\*|$)"
+  vapply(as.character(x), function(cell) {
+    if (is.na(cell) || !grepl(pat, cell, perl = TRUE)) return(cell)
+    hit <- regmatches(cell, regexec(pat, cell, perl = TRUE))[[1]]
+    sub(hit[1], paste0(hit[2], fmt_p_value(as.numeric(hit[3])), hit[4], hit[5]),
+        cell, fixed = TRUE)
+  }, character(1), USE.NAMES = FALSE)
+}
+
+kable <- function(x, ..., col.names = NA, caption = NULL) {
+  if (is.data.frame(x) || is.matrix(x)) {
+    headers <- if (length(col.names) == ncol(x)) col.names else colnames(x)
+    headers <- gsub("<[^>]+>", "", as.character(headers))
+    is_p <- grepl("^p$|^p[ _.(]|_p$|\\bp \\(|\\(FDR", headers) &
+      !grepl("^Sig|^Lost|family", headers)
+    if (!is.null(caption) &&
+        grepl("^(FDR-adjusted p-values|P-values FDR-corrected)", caption)) {
+      is_p <- rep(TRUE, ncol(x))
+    }
+    for (k in which(is_p)) {
+      # With escape = FALSE a bare "<" would be raw HTML, so write it as &lt;.
+      cells <- format_p_cells(if (is.matrix(x)) x[, k] else x[[k]])
+      if (identical(list(...)$escape, FALSE) && knitr::is_html_output()) {
+        cells <- gsub("< .001", "&lt; .001", cells, fixed = TRUE)
+      }
+      if (is.matrix(x)) {
+        storage.mode(x) <- "character"
+        x[, k] <- cells
+      } else {
+        x[[k]] <- cells
+      }
+    }
+  }
+  knitr::kable(x, col.names = col.names, caption = caption, ...)
+}
+
 cell_spec <- function(x, bold = FALSE, color = NULL, ...) {
   if (knitr::is_html_output()) {
     kableExtra::cell_spec(x, bold = bold, color = color, ...)
@@ -139,10 +185,17 @@ re-analysis).
 # TAG003 and TAG102 declined the MRI scan and did not complete the session
 # (TAG003 has T1 only, TAG102 has T1-T2 only, across all three biomarker
 # panels -- consistent with stopping before the scan/task-driven timepoints).
-# Excluded from the biomarker analytic sample entirely, at the source, so
+# TAG030/TAG038/TAG046/TAG047 are pilot sessions (the 4 earliest sessions in
+# the entire dataset) excluded for saliva-collection timing problems. All 6
+# are excluded from the biomarker analytic sample entirely, at the source, so
 # every downstream table/test (which all scope to the biomarker panels'
-# SampleIDs) reflects the true N = 76.
-sos_session_excluded_ids <- c("TAG003", "TAG102")
+# SampleIDs) reflects the true N = 72.
+sos_session_excluded_ids <- c(
+  "TAG003", "TAG102",                     # declined MRI, did not complete the session
+  "TAG030", "TAG038", "TAG046", "TAG047"  # pilot sessions, excluded for saliva-timing issues
+  # (TAG030: T3/T4 saliva timestamps missing; TAG038: T4 missing; TAG046: T4
+  # anomalously early relative to everyone else; TAG047: all of T2-T4 missing)
+)
 
 sos_cytokines <- read.csv(file.path(
   data_path,
@@ -160,6 +213,41 @@ sos_hormones <- read.csv(file.path(
 )) |>
   select(-starts_with("Estradiol")) |>
   filter(!(SampleID %in% sos_session_excluded_ids))
+
+# Panel selects + the canonical analytic-sample ID list, computed immediately
+# after the three raw panels load (rather than down in biomarker-panels,
+# where this used to live) so that EVERY other data frame in this document --
+# including ones loaded earlier in this chunk, like sos_subj_stress -- can
+# scope to the exact same analytic sample via one object, biomarker_ids,
+# instead of each re-deriving its own filter against sos_session_excluded_ids.
+sos_crp_panel       <- sos_crp       |> select(SampleID, Time, CRP_log)
+sos_cytokines_panel <- sos_cytokines |> select(SampleID, Time, IL10_log, IL6_log, TNFalpha_log)
+sos_hormones_panel  <- sos_hormones  |> select(SampleID, Time, DHEA_log, Testosterone_log, Cortisol_log)
+biomarker_ids <- bind_rows(sos_crp_panel, sos_cytokines_panel, sos_hormones_panel) |>
+  distinct(SampleID) |>
+  pull(SampleID)
+
+# Sample-scope check (Task 2, companion to the same mechanism in the primary
+# notebook): every data frame used in an analysis or descriptive table is
+# registered here, right after it's built, via check_sample_scope(). If any
+# registered frame contains an ID outside biomarker_ids, this stops the
+# render immediately, at the point where that frame is created. The complete
+# registry is printed in the Sample-Scope Check section near the end of this
+# document.
+sample_scope_registry <- list()
+check_sample_scope <- function(df, name, id_col = "SampleID") {
+  ids <- df[[id_col]]
+  ids <- ids[!is.na(ids)]
+  out_of_scope <- setdiff(unique(ids), biomarker_ids)
+  if (length(out_of_scope) > 0) {
+    stop(sprintf(
+      "Sample-scope violation in %s: %d ID(s) outside the N=72 analytic sample: %s",
+      name, length(out_of_scope), paste(out_of_scope, collapse = ", ")
+    ))
+  }
+  sample_scope_registry[[name]] <<- length(unique(ids))
+  invisible(df)
+}
 
 # Heart rate
 hr_resting1_raw <- read.csv(file.path(
@@ -183,7 +271,12 @@ hr_conditions_raw <- read_excel(file.path(
 sos_subj_stress <- read.csv(file.path(
   data_path,
   "SOS/SOS-study-monash/questionnaires/sos_subjective_stress_ratings.csv"
-))
+)) |>
+  # Scoped to the analytic sample via biomarker_ids -- the same analytic-
+  # sample definition age_df's semi_join uses below -- rather than a second,
+  # independently-maintained !(SampleID %in% sos_session_excluded_ids) filter.
+  filter(SampleID %in% biomarker_ids)
+check_sample_scope(sos_subj_stress, "sos_subj_stress")
 
 # Session-runner qualitative data (oral health, smoking, wake time)
 sos_session_runner <- read.csv(file.path(
@@ -230,7 +323,7 @@ hr_conditions_avg <- hr_conditions_raw |>
   filter(!is.na(task_condition), task_condition != "NA") |>
   mutate(task_condition = factor(task_condition,
     levels = c("3", "2", "1", "R"),
-    labels = c("Self-Connected", "Self-Disconnected", "Other", "Fixation-Cross")
+    labels = c("Both Watch You", "You Watch You", "Both Watch Peer", "Fixation-Cross")
   )) |>
   filter(!id %in% hr_exclude)
 
@@ -250,27 +343,14 @@ hr_final_wide <- hr_all_wide |>
       .default = str_sub(id, 1, 6)
     ),
     task_rs_hr_diff    = Task - resting_avg,
-    conn_dis_hr_diff   = `Self-Connected` - `Self-Disconnected`,
-    conn_other_hr_diff = `Self-Connected` - Other,
-    conn_rest_hr_diff  = `Self-Connected` - `Fixation-Cross`
+    conn_dis_hr_diff   = `Both Watch You` - `You Watch You`,
+    conn_other_hr_diff = `Both Watch You` - `Both Watch Peer`,
+    conn_rest_hr_diff  = `Both Watch You` - `Fixation-Cross`
   )
 
 hr_difference <- hr_final_wide |>
   select(SampleID, task_rs_hr_diff, conn_dis_hr_diff, conn_other_hr_diff, conn_rest_hr_diff)
-```
-
-```{r biomarker-panels, echo=FALSE}
-sos_crp_panel       <- sos_crp       |> select(SampleID, Time, CRP_log)
-sos_cytokines_panel <- sos_cytokines |> select(SampleID, Time, IL10_log, IL6_log, TNFalpha_log)
-sos_hormones_panel  <- sos_hormones  |> select(SampleID, Time, DHEA_log, Testosterone_log, Cortisol_log)
-
-# The canonical 76-person biomarker analytic sample (CRP, cytokines, and
-# hormones panels share the exact same SampleIDs). Computed here, early,
-# so it's available to scope static_covariates below as well as the
-# HR-subsample and missing-data sections further down.
-biomarker_ids <- bind_rows(sos_crp_panel, sos_cytokines_panel, sos_hormones_panel) |>
-  distinct(SampleID) |>
-  pull(SampleID)
+check_sample_scope(hr_difference, "hr_difference")
 ```
 
 ```{r peaks-processing, echo=FALSE}
@@ -377,9 +457,9 @@ all_difference <- bio_all_difference |>
 # test family was corrected; fixed in both places together).
 hr_ttest_tbl <- list(
   "Task vs. Resting" = t.test(hr_all_wide$Task, hr_all_wide$resting_avg, alternative = "two.sided", paired = TRUE),
-  "Self-Connected vs. Fixation-Cross" = t.test(pull_hr("Self-Connected"), pull_hr("Fixation-Cross"), alternative = "two.sided", paired = TRUE),
-  "Self-Connected vs. Self-Disconnected" = t.test(pull_hr("Self-Connected"), pull_hr("Self-Disconnected"), alternative = "two.sided", paired = TRUE),
-  "Self-Connected vs. Other" = t.test(pull_hr("Self-Connected"), pull_hr("Other"), alternative = "two.sided", paired = TRUE)
+  "Both Watch You vs. Fixation-Cross" = t.test(pull_hr("Both Watch You"), pull_hr("Fixation-Cross"), alternative = "two.sided", paired = TRUE),
+  "Both Watch You vs. You Watch You" = t.test(pull_hr("Both Watch You"), pull_hr("You Watch You"), alternative = "two.sided", paired = TRUE),
+  "Both Watch You vs. Both Watch Peer" = t.test(pull_hr("Both Watch You"), pull_hr("Both Watch Peer"), alternative = "two.sided", paired = TRUE)
 ) |>
   map(broom::tidy) |>
   list_rbind(names_to = "comparison") |>
@@ -389,12 +469,65 @@ hr_ttest_tbl <- list(
 ```
 
 ```{r biomarker-mlm, echo=FALSE}
+# Fits outcome ~ time_term with each random-effects structure in turn, stopping
+# at the first non-singular fit. Same rule as run_mlm_cov() in the supplement:
+# full structure, then random intercept + linear slope, then random intercept.
+fit_nonsingular <- function(outcome, time_term, re_terms, data) {
+  for (re_term in re_terms) {
+    f   <- as.formula(paste(outcome, "~ 1 +", time_term, "+", re_term))
+    fit <- lmer(f, na.action = na.omit, REML = TRUE, data = data)
+    if (!isSingular(fit, tol = 1e-4)) break
+  }
+  fit
+}
+
+re_structure <- function(fit) deparse(lme4::findbars(formula(fit))[[1]])
+
 run_mlm <- function(outcome, data) {
-  f_lin  <- as.formula(paste(outcome, "~ 1 + Time + (1 + Time | SampleID)"))
-  f_quad <- as.formula(paste(outcome, "~ 1 + poly(Time, 2) + (1 + poly(Time, 2) | SampleID)"))
-  mlm_lin  <- lmer(f_lin,  na.action = na.omit, REML = TRUE, data = data)
-  mlm_quad <- lmer(f_quad, na.action = na.omit, REML = TRUE, data = data)
-  list(linear = mlm_lin, quadratic = mlm_quad, aic = AIC(mlm_lin, mlm_quad), bic = BIC(mlm_lin, mlm_quad))
+  re_full <- "(1 + poly(Time, 2) | SampleID)"
+  re_lin  <- "(1 + Time | SampleID)"
+  re_int  <- "(1 | SampleID)"
+  mlm_lin  <- fit_nonsingular(outcome, "Time", c(re_lin, re_int), data)
+  mlm_quad <- fit_nonsingular(outcome, "poly(Time, 2)", c(re_full, re_lin, re_int), data)
+  # Linear comparator for the LRT. With the full quadratic structure this is
+  # the usual (1 + Time | SampleID) model. If the quadratic model was
+  # simplified, the comparator uses that same structure, so the LRT is a 1-df
+  # test of the fixed quadratic term. It can be singular itself, which doesn't
+  # affect the LRT, so it is not simplified further.
+  re_quad <- paste0("(", re_structure(mlm_quad), ")")
+  re_cmp  <- if (re_quad == re_full) re_lin else re_quad
+  mlm_lrt_lin <- lmer(as.formula(paste(outcome, "~ 1 + Time +", re_cmp)),
+                      na.action = na.omit, REML = TRUE, data = data)
+  # AIC/BIC use ML refits: REML likelihoods aren't comparable across models with
+  # different fixed effects. They compare the same two models as the LRT
+  # (lrt_linear vs. quadratic). `linear` is the step-down fit reported in the
+  # linear-only tables, which can differ from lrt_linear (IL-10).
+  mlm_cmp_ml  <- lme4::refitML(mlm_lrt_lin)
+  mlm_quad_ml <- lme4::refitML(mlm_quad)
+  list(linear = mlm_lin, quadratic = mlm_quad, lrt_linear = mlm_lrt_lin,
+       aic = AIC(mlm_cmp_ml, mlm_quad_ml), bic = BIC(mlm_cmp_ml, mlm_quad_ml))
+}
+
+re_label <- function(fit) {
+  switch(re_structure(fit),
+    "1 + poly(Time, 2) | SampleID" = "Full",
+    "1 + Time | SampleID"          = "Intercept + linear slope",
+    "1 | SampleID"                 = "Intercept only"
+  )
+}
+
+# Prints a table note when a model was simplified, read from the fitted model
+# so the note can't drift from what was actually estimated.
+cat_re_note <- function(fit, full_structure = "1 + poly(Time, 2) | SampleID") {
+  fitted_structure <- re_structure(fit)
+  if (fitted_structure == full_structure) return(invisible(NULL))
+  re_desc <- if (fitted_structure == "1 + Time | SampleID") {
+    "a random intercept and random linear slope"
+  } else {
+    "a random intercept only"
+  }
+  cat("\n\n*Note.* The full random-effects structure was singular, so this model uses ",
+      re_desc, ". The fixed-effects terms are the same as in the other models.\n\n", sep = "")
 }
 
 mlm_crp      <- run_mlm("CRP_log",          sos_crp_panel)
@@ -417,12 +550,14 @@ mlm_list <- list(
 # Aim 1c model comparison that the sensitivity analyses below are
 # checked against.
 lrt_tbl <- imap_dfr(mlm_list, function(res, name) {
-  a       <- anova(res$linear, res$quadratic, refit = TRUE)
+  a       <- anova(res$lrt_linear, res$quadratic, refit = TRUE)
   p_col   <- grep("Pr", colnames(a), value = TRUE)[1]
+  # The LRT and AIC/BIC must be comparing the same two models.
+  stopifnot(a$Df[2] == diff(res$aic$df))
   tibble(
     biomarker = name,
     chisq   = round(a$Chisq[2], 2),
-    df      = a$Df[2],  # 4, not 1 -- see the primary notebook's note on this
+    df      = a$Df[2],  # 4 or 1 -- see the primary notebook's note on this
     p_raw   = as.numeric(a[2, p_col])
   )
 }) |>
@@ -450,14 +585,17 @@ plot_sig_corrplot <- function(r_mat, p_mat, title = "", type = "upper",
     r_mat,
     p.mat     = p_mat,
     sig.level = 0.05,
-    insig     = "pch",
-    pch       = 4,
+    # Mark significant cells with * rather than crossing out the rest, so every
+    # correlation stays readable. p_mat decides which p (FDR or raw); the
+    # figure caption says which.
+    # corrplot's label_sig errors when no cell is significant, so skip it then.
+    insig     = if (any(p_mat < 0.05, na.rm = TRUE)) "label_sig" else "n",
     pch.col   = "black",
-    pch.cex   = 2.5,
+    pch.cex   = 1.6,
     method    = "circle",
     type      = type,
     tl.col    = "black",
-    tl.srt    = 45,
+    tl.srt    = 90,  # vertical: long condition labels overflow the right edge at 45
     tl.cex    = tl.cex,
     col       = colorRampPalette(c("#d73027", "white", "#4575b4"))(200),
     diag      = diag,
@@ -486,16 +624,19 @@ age_df <- dob_session_raw |>
   mutate(age_at_session = as.numeric(sos_session_date - dob) / 365.25) |>
   select(SampleID, age_at_session) |>
   semi_join(
-    bind_rows(sos_crp_panel, sos_cytokines_panel, sos_hormones_panel),
+    tibble(SampleID = biomarker_ids),
     by = "SampleID"
   )
+check_sample_scope(age_df, "age_df")
 ```
 
 ```{r puberty-load, echo=FALSE}
 # Pubertal status: PUBcomp (PDS+line drawings composite), computed in pubcomp-SOS.R
 # from data/SOS-pubcomp.csv
 sos_puberty <- read.csv(file.path(proj_path, "data", "SOS-pubcomp.csv")) |>
-  select(SampleID = SID, PUBcomp)
+  select(SampleID = SID, PUBcomp) |>
+  filter(SampleID %in% biomarker_ids)
+check_sample_scope(sos_puberty, "sos_puberty")
 
 # PDS F5 (perceived timing) and menarche date are not carried forward into
 # SOS-pubcomp.csv, so they're still read from the raw PDS questionnaire
@@ -532,10 +673,24 @@ dob_df <- dob_session_raw |>
   select(SampleID, dob) |>
   mutate(dob = as.Date(lubridate::parse_date_time(dob, orders = c("ymd", "mdy"))))
 
+# Hand-coded menarche dates for free-text PDS_F9 answers the parser can't read
+# but that give enough to estimate a date. Unknown day -> 15th; relative answers
+# are anchored to the SOS session date. Not recoverable: TAG059 ("not sure"),
+# TAG141 ("I forgot"), TAG176 ("right before 7th grade" -- too imprecise).
+menarche_manual <- tribble(
+  ~SampleID, ~menarche_date_manual, ~raw_answer,
+  "TAG048", as.Date("2014-09-16"), "september of 2014? probably around the 16th",
+  "TAG084", as.Date("2014-03-15"), "3/?/14",
+  "TAG309", as.Date("2017-10-20"), "~2 years ago (session 2019-10-20)",
+  "TAG312", as.Date("2019-09-15"), "sometime last month this year (session 2019-10-26)"
+)
+
 menarche_df <- pds_raw |>
   left_join(dob_df, by = "SampleID") |>
+  left_join(menarche_manual |> select(-raw_answer), by = "SampleID") |>
   mutate(
     menarche_date = as.Date(parse_menarche_date(menarche_date_raw)),
+    menarche_date = coalesce(menarche_date, menarche_date_manual),
     age_menarche  = as.numeric(menarche_date - dob) / 365.25
   ) |>
   select(SampleID, age_menarche)
@@ -578,9 +733,9 @@ reactivity_vars <- c(
 )
 
 reactivity_labels <- c(
-  "ΔHR: Task vs. Rest", "ΔHR: SC vs. SD", "ΔHR: SC vs. Other", "ΔHR: SC vs. Fixation-Cross",
+  "ΔHR: Task vs. Rest", "ΔHR: Both Watch You vs. You Watch You", "ΔHR: Both Watch You vs. Both Watch Peer", "ΔHR: Both Watch You vs. Fixation-Cross",
   "ΔCRP", "ΔIL-10", "ΔIL-6", "ΔTNF-α", "ΔDHEA", "ΔTestosterone", "ΔCortisol",
-  "ΔSubj Stress: SC vs. SD", "ΔSubj Stress: SC vs. Other"
+  "ΔSubj Stress: Both Watch You vs. You Watch You", "ΔSubj Stress: Both Watch You vs. Both Watch Peer"
 )
 ```
 
@@ -604,19 +759,32 @@ meds_wide <- read.csv(file.path(
 )) |>
   filter(wave == "sos") |>
   rename(SampleID = tagid) |>
+  filter(SampleID %in% biomarker_ids) |>
   select(SampleID, starts_with("flag_")) |>
   group_by(SampleID) |>
   summarise(
     across(starts_with("flag_"), \(x) any(x, na.rm = TRUE)),
     .groups = "drop"
   )
+check_sample_scope(meds_wide, "meds_wide")
 
 illness <- read.csv(file.path(
   data_path,
   "SOS/SOS-study-monash/SOS_medsNillness.csv"
 )) |>
   mutate(ill_yn = nzchar(sicklast24hrs)) %>%
-  rename(SampleID = sid)
+  rename(SampleID = sid) |>
+  filter(SampleID %in% biomarker_ids) |>
+  # SOS_medsNillness.csv has 1 duplicate SampleID (TAG017: one row with
+  # meds_yesterdayORtoday filled in, one entirely blank) -- same re-submitted-
+  # Qualtrics-entry pattern as wake_time/oral_health/smoking above. Left
+  # undeduplicated, this doesn't change ill_yn for TAG017 (sicklast24hrs is
+  # blank on both rows) but does inflate n in any count(ill_yn)-style table
+  # from 72 to 73. Keep the more complete row where one exists.
+  group_by(SampleID) |>
+  slice_max(order_by = nzchar(meds_yesterdayORtoday), n = 1, with_ties = FALSE) |>
+  ungroup()
+check_sample_scope(illness, "illness")
 
 ill_ids <- illness |> filter(ill_yn) |> pull(SampleID)
 
@@ -630,7 +798,9 @@ bmi <- read.csv(file.path(
     SampleID == "SOS068" ~ "TAG068",
     SampleID == "SOS076" ~ "TAG076",
     .default = SampleID
-  ))
+  )) |>
+  filter(SampleID %in% biomarker_ids)
+check_sample_scope(bmi, "bmi")
 
 # Oral health: Qualtrics export — saliva_1 = subject ID; saliva_7 = gum soreness
 # (1-10); saliva_8 = bleeding gums
@@ -651,10 +821,15 @@ oral_health <- read.csv(
   )) |>
   filter(grepl("^(TAG|SOS)\\d{3}", SampleID)) |>
   mutate(SampleID = sub("^SOS", "TAG", SampleID)) |>
-  # sos-session-runner-qual-data.csv has 2 duplicate SampleIDs (TAG085,
-  # TAG017), each one complete response row plus one entirely blank row
-  # (almost certainly a re-submitted Qualtrics entry) -- same source/issue
-  # fixed for wake_time above. Keep the complete row where one exists.
+  filter(SampleID %in% biomarker_ids) |>
+  # sos-session-runner-qual-data.csv has 1 duplicate SampleID after the
+  # format filter above (TAG017: one complete response row plus one entirely
+  # blank row, almost certainly a re-submitted Qualtrics entry) -- same
+  # source/issue fixed for wake_time above. (A second blank row, apparently
+  # meant as a TAG085 re-submission, was logged as "TAGS085" and is already
+  # dropped by the TAG\d{3}/SOS\d{3} format filter above, so TAG085 itself
+  # passes through here with its one valid row untouched.) Keep the complete
+  # row where one exists.
   group_by(SampleID) |>
   slice_max(order_by = nzchar(bleeding_gums), n = 1, with_ties = FALSE) |>
   ungroup() |>
@@ -662,6 +837,7 @@ oral_health <- read.csv(
     gum_soreness  = suppressWarnings(as.numeric(gum_soreness)),
     bleeding_gums = as.integer(bleeding_gums == "1")
   )
+check_sample_scope(oral_health, "oral_health")
 
 # Smoking: saliva_11 == "3" → smoker; SOS-prefix → TAG-prefix
 smoking <- sos_session_runner |>
@@ -669,11 +845,13 @@ smoking <- sos_session_runner |>
   setNames(c("SampleID", "smokes")) |>
   filter(grepl("^(TAG|SOS)\\d{3}", SampleID)) |>
   mutate(SampleID = sub("^SOS", "TAG", SampleID)) |>
+  filter(SampleID %in% biomarker_ids) |>
   # Same duplicate-row issue as wake_time/oral_health above.
   group_by(SampleID) |>
   slice_max(order_by = nzchar(smokes), n = 1, with_ties = FALSE) |>
   ungroup() |>
   mutate(smokes = (smokes == "3"))
+check_sample_scope(smoking, "smoking")
 
 # Sample timing: parse HH:MM → minutes since midnight, separately for the
 # immune ('i') and hormone ('h') tube collections; compute elapsed time from
@@ -702,8 +880,10 @@ saliva_timing <- sos_saliva_times |>
     elapsed_i_T2 = t2i_min - t1i_min, elapsed_i_T3 = t3i_min - t1i_min, elapsed_i_T4 = t4i_min - t1i_min,
     elapsed_h_T2 = t2h_min - t1h_min, elapsed_h_T3 = t3h_min - t1h_min, elapsed_h_T4 = t4h_min - t1h_min
   ) |>
+  filter(SampleID %in% biomarker_ids) |>
   select(SampleID, t1i_min, t2i_min, t3i_min, t4i_min, t1h_min, t2h_min, t3h_min, t4h_min,
          starts_with("elapsed_"))
+check_sample_scope(saliva_timing, "saliva_timing")
 
 # Wake time × hormones: parse free-text wake time; join to T1 (immune tube) start time
 parse_wake <- function(x) {
@@ -728,20 +908,25 @@ wake_time <- sos_session_runner |>
     wake_min = parse_wake(wake_raw),
     wake_min = ifelse(wake_min > 840, NA_real_, wake_min)  # exclude implausible (>2pm)
   ) |>
-  # sos_session_runner has 2 duplicate SampleIDs (TAG085: two blank
-  # responses; TAG017: one valid "7 am" response and one blank) -- almost
-  # certainly a re-submitted Qualtrics entry. Left undeduplicated, these fan
-  # out through every downstream join (static_covariates and everything
-  # built from it: covariate-adjusted trend models, physiological covariate
-  # descriptives, etc.), silently inflating N for age/BMI/hours-since-waking
-  # by double-counting these 2 people (e.g. age N=77 instead of the correct
-  # 75). Keep the row with a valid wake_min where one exists.
+  filter(SampleID %in% biomarker_ids) |>
+  # sos_session_runner has 1 duplicate SampleID after the format filter
+  # above (TAG017: one valid "7 am" response and one blank) -- almost
+  # certainly a re-submitted Qualtrics entry. (A second blank re-submission,
+  # apparently meant for TAG085, was logged as "TAGS085" and is already
+  # dropped by the TAG\d{3}/SOS\d{3} format filter above, so TAG085 passes
+  # through here with its one valid row untouched.) Left undeduplicated,
+  # TAG017's extra row would fan out through every downstream join
+  # (static_covariates and everything built from it: covariate-adjusted
+  # trend models, physiological covariate descriptives, etc.), silently
+  # double-counting that person within the 72-person analytic sample. Keep
+  # the row with a valid wake_min where one exists.
   group_by(SampleID) |>
   slice_max(order_by = !is.na(wake_min), n = 1, with_ties = FALSE) |>
   ungroup() |>
   select(SampleID, wake_min) |>
   left_join(saliva_timing |> select(SampleID, t1i_min), by = "SampleID") |>
   mutate(hours_since_wake = (t1i_min - wake_min) / 60)
+check_sample_scope(wake_time, "wake_time")
 
 # Flow rate: saliva flow rate (mL/min) = volume of saliva collected / duration
 # of the timed collection. Duration is recorded as MM.SS (e.g. "9.06" = 9 min
@@ -771,7 +956,10 @@ session_flow_raw <- read.csv(file.path(
   data_path, "SOS/SOS-study-monash/overview/SOS_session_data.csv"
 )) |>
   filter(redcap_event_name == "sos_arm_1") |>
-  mutate(SampleID = sub("_", "", subject_spit_id)) |>
+  # toupper(): this file stores two analytic-sample IDs in mixed case (tag224,
+  # Tag317), which otherwise fail every join and the biomarker_ids filter.
+  mutate(SampleID = toupper(sub("_", "", subject_spit_id))) |>
+  filter(SampleID %in% biomarker_ids) |>
   select(SampleID, sos_sample1i_duration, sos_sample1h_duration,
          sos_sample2i_duration, sos_sample2h_duration,
          sos_sample3i_duration, sos_sample3h_duration,
@@ -794,6 +982,7 @@ session_flow_raw <- read.csv(file.path(
     flow_h_4 = saliva_volume_mL / (duration_h_4 / 60)
   ) |>
   select(SampleID, starts_with("flow_"))
+check_sample_scope(session_flow_raw, "session_flow_raw")
 
 # Long-format flow rate (one row per SampleID x Time), for merging into the
 # biomarker trend panels as a time-varying covariate
@@ -827,7 +1016,7 @@ med_hormone_cytokine <- meds_wide |>
   transmute(SampleID, med_hormone_cytokine = flag_bc | flag_hormone | flag_systemic_steroid |
               flag_nsaid | flag_allergy | flag_pain_other)
 
-# Base population is the full 76-person biomarker sample, not age_df --
+# Base population is the full 72-person biomarker sample, not age_df --
 # age_df's row count depends on REDCap event presence, not analytic-sample
 # membership (e.g. it lacks a row at all for a participant with zero DOB
 # record, but still has a row with NA age for one with a blank DOB field),
@@ -874,7 +1063,9 @@ trajectory to their own actual, measured scan start time.*
 # Anchor = each participant's own actual scan start; falls back to their own SOS
 # task start for the handful of participants missing a recorded scan start time.
 session_timing <- sos_session_timing_raw |>
-  mutate(SampleID = sub("_", "", subject_spit_id)) |>
+  # toupper(): same mixed-case IDs (tag224, Tag317) as SOS_session_data.csv.
+  mutate(SampleID = toupper(sub("_", "", subject_spit_id))) |>
+  filter(SampleID %in% biomarker_ids) |>
   mutate(
     scan_start_min      = parse_hhmm(sos_scan_actual_start),
     sos_start_min       = parse_hhmm(sos_actual_start),
@@ -896,6 +1087,7 @@ session_timing <- sos_session_timing_raw |>
   ) |>
   select(SampleID, scan_start_min, sos_start_min, session_end_min, anchor_min, anchor_source,
          end_time_corrected)
+check_sample_scope(session_timing, "session_timing")
 
 timing_anchor <- saliva_timing |>
   left_join(session_timing, by = "SampleID") |>
@@ -1000,13 +1192,16 @@ roughly spanning scan start through the SOS-task start.
 # Definitions match the primary notebook (Aim 3a/3b) exactly. Also needed by
 # Section S3 below (AUCi peak-vs-AUCi head-to-head tables), which reuses these
 # same objects rather than reloading them.
-quest_raw_q <- read.csv(file.path(proj_path, "data", "SOS_questionnaire_data.csv"))
+quest_raw_q <- read.csv(file.path(proj_path, "data", "SOS_questionnaire_data.csv")) |>
+  filter(SID %in% biomarker_ids)
 
 dep <- read.csv(file.path(
   data_path,
   "SOS/SOS-study-monash/questionnaires/CESD_total.csv"
 )) |>
-  select(SampleID, CESD_total)
+  select(SampleID, CESD_total) |>
+  filter(SampleID %in% biomarker_ids)
+check_sample_scope(dep, "dep")
 
 bfnes <- quest_raw_q |>
   select(SampleID = SID, starts_with("BFNES_")) |>
@@ -1018,6 +1213,7 @@ bfnes <- quest_raw_q |>
     BFNES_total = rowSums(across(starts_with("BFNES_")), na.rm = FALSE)
   ) |>
   select(SampleID, BFNES_total)
+check_sample_scope(bfnes, "bfnes")
 
 biomarker_levels <- sos_crp_panel |>
   full_join(sos_cytokines_panel, by = c("SampleID", "Time")) |>
@@ -1166,16 +1362,16 @@ gender <- quest_raw_q |>
     FSMI_6 == 4 ~ str_to_sentence(str_trim(FSMI_6_4_TEXT)),
     TRUE ~ NA_character_
   ))
+check_sample_scope(gender, "gender")
 
-# Base population is the full biomarker sample (76), not age_df -- age_df
-# requires a valid DOB and session date (2 participants, both HR-available,
-# lack one of those and would otherwise be silently dropped from every
-# comparison here, not just the age one). age_at_session is left-joined so it
-# is simply NA for those 2 (each t.test() drops NAs for that one comparison
-# only, same as any t.test always does), rather than bottlenecking the
-# puberty/BMI/gender checks by age-availability too. (biomarker_ids itself
-# is computed earlier, in the biomarker-panels chunk, so static_covariates
-# above can also be scoped to the full 76-person sample.)
+# Base population is the full biomarker sample (72), not age_df -- age_df
+# requires a valid DOB and session date (2 participants lack one of those
+# and would otherwise be silently dropped from every comparison here, not
+# just the age one). age_at_session is left-joined so it is simply NA for
+# those 2 (each t.test() drops NAs for that one comparison only, same as any
+# t.test always does), rather than bottlenecking the puberty/BMI/gender
+# checks by age-availability too. biomarker_ids itself is computed in
+# load-data above, right after the three raw panels load.
 hr_subsample_compare <- tibble(SampleID = biomarker_ids) |>
   left_join(age_df,   by = "SampleID") |>
   left_join(sos_puberty, by = "SampleID") |>
@@ -1195,7 +1391,7 @@ chisq_gender_hr  <- suppressWarnings(chisq.test(gender_hr_tbl))
 ```
 
 ```{r hr-subsample-table}
-# n is the group's total size (of the full 76-person biomarker sample); n
+# n is the group's total size (of the full 72-person biomarker sample); n
 # per variable is reported separately since it can be smaller for age
 # specifically (2 participants, both HR-available, lack a valid DOB/session
 # date and so contribute to no age statistic, though they do to PUBcomp/BMI/
@@ -1245,6 +1441,49 @@ n_missing_age_no_hr  <- sum(hr_subsample_compare$has_hr == "No HR data"  & is.na
 ```
 
 **Results.** Of the `r length(biomarker_ids)` participants with biomarker data, `r n_has_hr` also had usable HR data and `r n_no_hr` did not (`r n_has_hr` + `r n_no_hr` = `r n_has_hr + n_no_hr`, the full biomarker sample -- every HR-available participant has biomarker data, so this partition is exhaustive). Comparing the two groups on age, pubertal status, BMI, and gender identity, `r hr_sig_text` showed a significant difference at *p* < .05 (uncorrected). The age comparison specifically drops `r n_missing_age_has_hr + n_missing_age_no_hr` participant`r if (n_missing_age_has_hr + n_missing_age_no_hr != 1) "s"` (`r n_missing_age_has_hr` HR-available, `r n_missing_age_no_hr` not) who lack a valid DOB or session date and so have no computable age; they are retained for the pubertal status, BMI, and gender comparisons. `r if (length(hr_sig_checks) == 0) "This is consistent with HR-data availability being unrelated to these demographic/developmental characteristics, though this check cannot rule out selection on unmeasured variables (e.g., equipment/session-logistics reasons for missing HR data)." else "This difference should be considered when interpreting HR-based reactivity results or any comparison between HR and biomarker reactivity, since it suggests the two subsamples are not directly comparable on this measure."`
+
+### Reasons for Missing HR Data
+
+*The `r n_no_hr` analytic-sample participants above without usable pulse-oximetry HR data fall into two groups: sessions that ran before physio HR monitoring was added to the protocol, and sessions that ran afterward but are missing HR for some other (equipment/technical) reason. There's no explicit "monitoring started on this date" flag in the raw data, so the cutoff used here is empirical: the earliest session date among participants who DO have usable HR data. Any no-HR participant whose own session date is before that cutoff is classified as "predates HR monitoring"; any no-HR participant whose session date is on or after it is classified as "missing, technical reasons" (HR monitoring was already running for other participants by then).*
+
+```{r hr-missing-reasons, echo=FALSE}
+session_dates <- dob_session_raw |>
+  filter(redcap_event_name == "sos_arm_1") |>
+  select(SampleID, sos_session_date) |>
+  mutate(sos_session_date = as.Date(lubridate::parse_date_time(sos_session_date, orders = c("ymd", "mdy"))))
+
+hr_missing_reasons <- hr_subsample_compare |>
+  select(SampleID, has_hr) |>
+  left_join(session_dates, by = "SampleID")
+
+earliest_hr_date <- hr_missing_reasons |>
+  filter(has_hr == "Has HR data") |>
+  pull(sos_session_date) |>
+  min(na.rm = TRUE)
+
+hr_missing_reasons <- hr_missing_reasons |>
+  mutate(missing_reason = case_when(
+    has_hr == "Has HR data"                       ~ NA_character_,
+    is.na(sos_session_date)                        ~ "Session date unavailable",
+    sos_session_date < earliest_hr_date            ~ "Predates HR monitoring",
+    .default                                       = "Missing, technical reasons"
+  ))
+
+n_predates_hr    <- sum(hr_missing_reasons$missing_reason == "Predates HR monitoring", na.rm = TRUE)
+n_technical_hr   <- sum(hr_missing_reasons$missing_reason == "Missing, technical reasons", na.rm = TRUE)
+n_nodate_hr      <- sum(hr_missing_reasons$missing_reason == "Session date unavailable", na.rm = TRUE)
+
+hr_missing_reasons |>
+  filter(has_hr == "No HR data") |>
+  count(missing_reason, name = "n") |>
+  arrange(desc(n)) |>
+  kable(col.names = italicize_stats(c("Reason", "n")),
+        caption   = sprintf("Why the %d no-HR participants lack pulse-oximetry HR data (earliest HR-available session: %s)",
+                             n_no_hr, format(earliest_hr_date, "%Y-%m-%d"))) |>
+  apa_table(full_width = FALSE)
+```
+
+Of the `r n_no_hr` participants without usable pulse-oximetry HR data, `r n_predates_hr` had session dates before the earliest HR-available session (`r format(earliest_hr_date, "%Y-%m-%d")`) and so predate HR monitoring being added to the protocol; `r n_technical_hr` had a session date on or after that point (i.e., during a period when HR monitoring was already running for other participants) and are missing HR for some other, undocumented reason`r if (n_nodate_hr > 0) paste0("; ", n_nodate_hr, " participant", if (n_nodate_hr != 1) "s" else "", " could not be classified at all (no session date on record)") else ""`.
 
 ---
 
@@ -1330,6 +1569,19 @@ lowest_react <- missing_summary(all_difference, reactivity_vars, reactivity_labe
 
 **Results.** Among demographic/covariate variables, `r lowest_demo$Variable` has the most missingness (`r lowest_demo[["N missing"]]` of `r length(biomarker_ids)`, `r lowest_demo[["% missing"]]`%). Among the 13 reactivity indices, `r lowest_react$Variable` has the most missingness (`r lowest_react[["N missing"]]` of `r length(biomarker_ids)`, `r lowest_react[["% missing"]]`%). Raw biomarker-level missingness is generally low and fairly stable across timepoints (see table above); it is the *covariates* -- hours since waking and hormone-tube flow rate specifically -- that drive the much smaller analytic samples in the covariate-adjusted models in Section S2, not the biomarker measurements themselves. The hours-since-waking missingness in particular reflects a protocol change rather than differential non-response: the wake-time item was added to the session-runner questionnaire partway through data collection, so every session recorded before 2019-04-14 has no wake time on file (regardless of participant), while sessions from 2019-04-14 onward have it recorded essentially universally.
 
+## Sample-Scope Check
+
+Every data frame registered via `check_sample_scope()` so far (defined near the top of load-data, right after `biomarker_ids`; enforced at each frame's creation point throughout the document, so the render fails immediately if any frame contains an ID outside the N=72 analytic sample). Frames loaded later in the document (e.g. the S1-S6 sensitivity frames) are checked the moment they're created and folded into this same registry; see the Sample-Scope Check Addendum at the end of the document for the complete, final table.
+
+```{r sample-scope-table-early}
+tibble(
+  `Data frame` = names(sample_scope_registry),
+  n = unlist(sample_scope_registry, use.names = FALSE)
+) |>
+  kable(caption = "Sample-scope registry (data frames checked so far; n = distinct in-scope SampleIDs)") |>
+  apa_table(full_width = FALSE)
+```
+
 ---
 
 # Sensitivity Analyses
@@ -1399,7 +1651,18 @@ meds_wide |>
   summarise(across(everything(), \(x) sum(x, na.rm = TRUE))) |>
   pivot_longer(everything(), names_to = "medication", values_to = "n_using") |>
   filter(n_using > 0) |>
-  mutate(medication = str_remove(medication, "^flag_")) |>
+  mutate(medication = recode(str_remove(medication, "^flag_"),
+    nsaid = "NSAID", allergy = "Allergy medication", inhaler = "Inhaler",
+    bc = "Birth control", hormone = "Other hormone medication", ssri = "SSRI",
+    stimulant = "Stimulant", antibiotic = "Antibiotic", vaccine = "Vaccine",
+    thc = "THC", supplement = "Supplement", pain_other = "Other pain medication",
+    insulin = "Insulin", antipsychotic = "Antipsychotic", mood_stabilizer = "Mood stabilizer",
+    anxiety_med = "Anxiety medication", gi = "Gastrointestinal medication",
+    cold_otc = "Over-the-counter cold medication", cardiac = "Cardiac medication",
+    migraine = "Migraine medication", acne = "Acne medication",
+    topical_steroid = "Topical steroid", sleep = "Sleep medication",
+    systemic_steroid = "Systemic steroid", antifungal = "Antifungal",
+    dental = "Dental medication")) |>
   arrange(desc(n_using)) |>
   kable(escape = FALSE, col.names = italicize_stats(c("Medication category", "n using")),
         caption = "Medication use at SOS visit") |>
@@ -1467,9 +1730,9 @@ sens_peak_tests |>
 ```{r sens-illness-hr-ttests}
 list(
   "Task vs. Resting"                     = t.test(hr_all_wide_well$Task, hr_all_wide_well$resting_avg, alternative = "two.sided", paired = TRUE),
-  "Self-Connected vs. Fixation-Cross"    = t.test(pull_hr_well("Self-Connected"), pull_hr_well("Fixation-Cross"),    alternative = "two.sided", paired = TRUE),
-  "Self-Connected vs. Self-Disconnected" = t.test(pull_hr_well("Self-Connected"), pull_hr_well("Self-Disconnected"), alternative = "two.sided", paired = TRUE),
-  "Self-Connected vs. Other"             = t.test(pull_hr_well("Self-Connected"), pull_hr_well("Other"),            alternative = "two.sided", paired = TRUE)
+  "Both Watch You vs. Fixation-Cross"    = t.test(pull_hr_well("Both Watch You"), pull_hr_well("Fixation-Cross"),    alternative = "two.sided", paired = TRUE),
+  "Both Watch You vs. You Watch You" = t.test(pull_hr_well("Both Watch You"), pull_hr_well("You Watch You"), alternative = "two.sided", paired = TRUE),
+  "Both Watch You vs. Both Watch Peer"             = t.test(pull_hr_well("Both Watch You"), pull_hr_well("Both Watch Peer"),            alternative = "two.sided", paired = TRUE)
 ) |>
   map(broom::tidy) |>
   list_rbind(names_to = "comparison") |>
@@ -1543,12 +1806,29 @@ bind_rows(
 Re-running peak vs. T1 biomarker t-tests after excluding participants who reported bleeding gums OR who smoke, in addition to those who were ill.
 
 ```{r sens-bleed-smoke-exclusion, echo=FALSE}
-excl_clean_ids <- illness    |> filter(ill_yn) |> pull(SampleID) |>
-  union(oral_health |> filter(bleeding_gums == 1) |> pull(SampleID)) |>
-  union(smoking     |> filter(smokes)             |> pull(SampleID))
+excl_ill_ids      <- illness    |> filter(ill_yn)        |> pull(SampleID)
+excl_bleeding_ids <- oral_health |> filter(bleeding_gums == 1) |> pull(SampleID)
+excl_smoking_ids  <- smoking    |> filter(smokes)         |> pull(SampleID)
+excl_clean_ids <- excl_ill_ids |> union(excl_bleeding_ids) |> union(excl_smoking_ids)
 
 cat("N excluded (ill + bleeding + smoking):", length(excl_clean_ids), "\n")
 cat("IDs:", paste(sort(excl_clean_ids), collapse = ", "), "\n")
+
+# Task 4: n ill, n smoking (bleeding gums shown too, since it's part of the
+# same union), n in more than one category, and the total excluded within
+# the 72-person analytic sample. All three component ID lists are already
+# scoped to biomarker_ids via illness/oral_health/smoking above (not the
+# unscoped sos_session_excluded_ids-only lists, which previously let
+# TAG102 -- outside the 72 -- leak into this union).
+excl_n_multiple <- sum(table(c(excl_ill_ids, excl_bleeding_ids, excl_smoking_ids)) > 1)
+tibble(
+  Category = c("Ill (last 24 hrs)", "Bleeding gums", "Smokes",
+               "In ≥2 categories", "Total excluded (union, within N=72)"),
+  n = c(length(excl_ill_ids), length(excl_bleeding_ids), length(excl_smoking_ids),
+        excl_n_multiple, length(excl_clean_ids))
+) |>
+  kable(caption = "Illness/bleeding-gums/smoking exclusion counts within the 72-person analytic sample") |>
+  apa_table(full_width = FALSE)
 
 crp_wide_clean       <- sos_crp_wide       |> filter(!SampleID %in% excl_clean_ids)
 cytokines_wide_clean <- sos_cytokines_wide |> filter(!SampleID %in% excl_clean_ids)
@@ -1611,10 +1891,21 @@ mlm_clean_list <- list(
 ```
 
 ```{r sens-trend-clean-comparison}
+# LRT for the same two models as AIC/BIC, FDR-corrected across the 4 immune
+# markers (the only markers in this sensitivity analysis).
+clean_lrt_tbl <- imap_dfr(mlm_clean_list, function(res, name) {
+  a <- anova(res$lrt_linear, res$quadratic, refit = TRUE)
+  stopifnot(a$Df[2] == diff(res$aic$df))
+  tibble(biomarker = name, chisq = a$Chisq[2], lrt_df = a$Df[2],
+         p_raw = as.numeric(a[2, grep("Pr", colnames(a), value = TRUE)[1]]))
+}) |>
+  mutate(p_fdr = p.adjust(p_raw, method = "fdr"))
+
 clean_model_comp_tbl <- imap_dfr(mlm_clean_list, function(res, name) {
   tibble(
     biomarker = name,
     Model   = c("Linear", "Quadratic"),
+    random_effects = c(re_label(res$lrt_linear), re_label(res$quadratic)),
     df      = res$aic$df,
     AIC     = round(res$aic$AIC, 1),
     BIC     = round(res$bic$BIC, 1)
@@ -1623,12 +1914,21 @@ clean_model_comp_tbl <- imap_dfr(mlm_clean_list, function(res, name) {
 
 clean_best_rows <- clean_model_comp_tbl |>
   group_by(biomarker) |>
-  mutate(is_best = AIC == min(AIC)) |>
+  mutate(is_best = BIC == min(BIC)) |>
   ungroup() |>
   pull(is_best)
 
 clean_model_comp_tbl |>
-  kable(caption = "Model comparison: excluding ill, bleeding gums, and smokers") |>
+  left_join(clean_lrt_tbl |> select(biomarker, chisq, lrt_df, p_fdr), by = "biomarker") |>
+  mutate(
+    chisq  = if_else(Model == "Quadratic", sprintf("%.2f", chisq), ""),
+    lrt_df = if_else(Model == "Quadratic", as.character(lrt_df), ""),
+    p_fdr  = if_else(Model == "Quadratic", fmt_p_value(p_fdr), "")
+  ) |>
+  kable(escape = FALSE,
+        col.names = italicize_stats(c("Biomarker", "Model", "Random effects", "df", "AIC", "BIC",
+                                      "chi-sq", "LRT df", "p (FDR)")),
+        caption = "Model comparison (ML fits; lowest BIC in bold; LRT FDR-corrected across the 4 immune markers): excluding ill, bleeding gums, and smokers") |>
   apa_table(full_width = FALSE) |>
   row_spec(which(clean_best_rows), bold = TRUE, color = "#2166ac")
 ```
@@ -1660,6 +1960,7 @@ iwalk(mlm_clean_list, function(res, name) {
           caption = paste(name, "quadratic fixed effects (excluding ill, bleeding gums, smokers)")) |>
     apa_table(full_width = FALSE) |>
     print()
+  cat_re_note(res$quadratic)
 })
 ```
 
@@ -1667,15 +1968,15 @@ iwalk(mlm_clean_list, function(res, name) {
 
 Correlations between each of the 4 immune reactivity measures and all 13 reactivity measures (Aim 1d), recomputed after excluding participants who were ill, reported bleeding gums, or smoke.
 
-```{r sens-corr-clean, fig.width=12, fig.height=4, fig.cap="Correlation matrix: immune reactivity x all 13 reactivity outcomes, illness/bleeding-gums/smoking-excluded sample"}
+```{r sens-corr-clean, fig.width=12, fig.height=7, fig.cap="Correlation matrix: immune reactivity x all 13 reactivity outcomes, illness/bleeding-gums/smoking-excluded sample (* = FDR-corrected p < .05 within domain)"}
 diff_matrix_clean <- all_difference |>
   filter(!SampleID %in% excl_clean_ids) |>
   select(-SampleID) |>
   as.matrix()
 colnames(diff_matrix_clean) <- c(
-  "ΔHR: Task vs. Rest", "ΔHR: SC vs. SD", "ΔHR: SC vs. Other", "ΔHR: SC vs. Fixation-Cross",
+  "ΔHR: Task vs. Rest", "ΔHR: Both Watch You vs. You Watch You", "ΔHR: Both Watch You vs. Both Watch Peer", "ΔHR: Both Watch You vs. Fixation-Cross",
   "ΔCRP", "ΔIL-10", "ΔIL-6", "ΔTNF-α", "ΔDHEA", "ΔTestosterone", "ΔCortisol",
-  "ΔSubj Stress: SC vs. SD", "ΔSubj Stress: SC vs. Other"
+  "ΔSubj Stress: Both Watch You vs. You Watch You", "ΔSubj Stress: Both Watch You vs. Both Watch Peer"
 )
 
 diff_rcorrs_clean <- rcorr(diff_matrix_clean)
@@ -1712,7 +2013,7 @@ plot_sig_corrplot(
 )
 ```
 
-*X marks indicate non-significant correlations after FDR correction (p~FDR~ ≥ .05). FDR applied separately for each immune reactivity measure, within each reactivity domain (matches the Aim 1d FDR convention).*
+*\* marks correlations significant after FDR correction (p~FDR~ < .05). FDR applied separately for each immune reactivity measure, within each reactivity domain (matches the Aim 1d FDR convention).*
 
 ```{r sens-corr-clean-tables}
 # The corrplot above has no numeric table alongside it (unlike the full-sample
@@ -1740,7 +2041,7 @@ fdr_immune_clean_mat |>
 
 Correlations between pubertal status/timing (Aim 2) and the 4 immune reactivity measures, recomputed after excluding participants who were ill, reported bleeding gums, or smoke.
 
-```{r sens-puberty-corr-clean, fig.width=8, fig.height=4, fig.cap="Correlation matrix: pubertal status/timing x immune reactivity, illness/bleeding-gums/smoking-excluded sample"}
+```{r sens-puberty-corr-clean, fig.width=10, fig.height=5, fig.cap="Correlation matrix: pubertal status/timing x immune reactivity, illness/bleeding-gums/smoking-excluded sample (* = FDR-corrected p < .05 within domain)"}
 timing_reactivity_clean <- timing_reactivity |>
   filter(!SampleID %in% excl_clean_ids)
 
@@ -1763,12 +2064,12 @@ for (pv in all_pub_labels) {
 plot_sig_corrplot(
   pub_immune_corrs_clean$r[all_pub_labels, immune_reactivity_labels, drop = FALSE],
   fdr_pub_immune_clean,
-  type = "full", cl.ratio = 0.15, cl.cex = 1.1,
-  tl.cex = 1.0, mar = c(0, 0, 1, 4), diag = TRUE
+  type = "full", cl.ratio = 0.15, cl.cex = 0.85,
+  tl.cex = 1.0, mar = c(0, 3, 1, 4), diag = TRUE
 )
 ```
 
-*X marks indicate non-significant correlations after FDR correction (p~FDR~ ≥ .05). FDR applied separately for each puberty/timing variable, across the 4 immune reactivity outcomes.*
+*\* marks correlations significant after FDR correction (p~FDR~ < .05). FDR applied separately for each puberty/timing variable, across the 4 immune reactivity outcomes.*
 
 ```{r sens-puberty-corr-clean-tables}
 # Same gap as the immune-reactivity corrplot above -- no numeric table
@@ -1968,7 +2269,7 @@ covflow_react_join |>
 
 This uses the same bivariate-correlation approach as the primary reactivity-correlation analyses (Aim 1d, Aim 2). Columns are the same 13 reactivity outcomes used throughout (4 HR, 4 immune, 3 hormone, 2 subjective stress).
 
-```{r covflow-corr-matrix, fig.width=14, fig.height=6, fig.cap="Correlation matrix: physiological covariates (flow rate, age, BMI, hours since waking) x all 13 reactivity outcomes"}
+```{r covflow-corr-matrix, fig.width=14, fig.height=8.5, fig.cap="Correlation matrix: physiological covariates (flow rate, age, BMI, hours since waking) x all 13 reactivity outcomes (* = FDR-corrected p < .05 within domain)"}
 covflow_mat <- covflow_react_join |>
   select(all_of(c(covflow_vars, reactivity_vars))) |>
   as.matrix()
@@ -2000,7 +2301,7 @@ plot_sig_corrplot(
 )
 ```
 
-*X marks indicate non-significant correlations after FDR correction (p~FDR~ ≥ .05). FDR applied separately for each covariate, within each reactivity domain (HR, immune, hormones, subjective stress). Blank cells for the flow-rate-difference rows against HR/subjective-stress columns indicate the pairing was not tested (see note above).*
+*\* marks correlations significant after FDR correction (p~FDR~ < .05). FDR applied separately for each covariate, within each reactivity domain (HR, immune, hormones, subjective stress). Blank cells for the flow-rate-difference rows against HR/subjective-stress columns indicate the pairing was not tested (see note above).*
 
 #### Correlation p-values: Physiological Covariates × All 13 Reactivity Outcomes
 
@@ -2077,6 +2378,17 @@ run_mlm_cov <- function(outcome, data, quadratic = TRUE, include_flow = TRUE) {
              "age_at_session + BMI + hours_since_wake + med_hormone_cytokine + (1 + Time | SampleID)")
     ))
     fit <- lmer(f_simple, data = data, na.action = na.omit, REML = TRUE)
+    # Still singular means the random Time slope isn't estimable either, so
+    # drop to a random intercept. The fixed effects, including poly(Time, 2),
+    # are unchanged, so the trend test itself is still run.
+    if (isSingular(fit, tol = 1e-4)) {
+      f_intercept <- as.formula(paste(
+        outcome,
+        paste0("~ 1 + ", time_term, " + ", flow_term,
+               "age_at_session + BMI + hours_since_wake + med_hormone_cytokine + (1 | SampleID)")
+      ))
+      fit <- lmer(f_intercept, data = data, na.action = na.omit, REML = TRUE)
+    }
   }
   fit
 }
@@ -2135,6 +2447,16 @@ for (nm in names(covtrend_models)) {
   # entirely (na.action = na.omit in run_mlm_cov above) -- substantially
   # smaller than the primary (unadjusted) trend models' N.
   n_model <- lme4::ngrps(covtrend_models[[nm]])
+  # Flow rate is only entered for CRP, DHEA, and Testosterone (see
+  # run_mlm_cov calls above, include_flow = FALSE for IL-10/IL-6/TNF-alpha/
+  # Cortisol) -- the caption must match each model's actual terms, not a
+  # single shared "adjusted for flow rate..." string for all 7.
+  flow_in_model <- nm %in% c("CRP", "DHEA", "Testosterone")
+  caption_covariates <- if (flow_in_model) {
+    "flow rate, age, BMI, hours since waking, and hormone/cytokine-relevant medication use"
+  } else {
+    "age, BMI, hours since waking, and hormone/cytokine-relevant medication use"
+  }
   covtrend_all_fixed |>
     filter(biomarker == nm) |>
     mutate(
@@ -2148,9 +2470,10 @@ for (nm in names(covtrend_models)) {
       color = if_else(!is.na(p_fdr) & p_fdr < 0.05, "#2166ac", "black"))) |>
     kable(escape = FALSE,
           col.names = italicize_stats(c("Term", "b", "SE", "t", "df", "p (raw)", "p (FDR)")),
-          caption = paste0(nm, " trend model adjusted for flow rate, age, BMI, hours since waking, and hormone/cytokine-relevant medication use (N = ", n_model, " participants)")) |>
+          caption = paste0(nm, " trend model adjusted for ", caption_covariates, " (N = ", n_model, " participants)")) |>
     apa_table(full_width = FALSE) |>
     print()
+  cat_re_note(covtrend_models[[nm]])
 }
 ```
 
@@ -2634,7 +2957,7 @@ dep_index_dependent_text <- if (nrow(dep_index_dependent) == 0) NULL else
 
 ## S4: Diurnal Rhythm Check
 
-*Rationale.* An AUCi decrease could reflect either a task-related suppression or ordinary diurnal decline over the session, since steroid hormones (cortisol, DHEA, testosterone) follow a circadian rhythm that immune markers do not share. Hours since waking, not session clock time, is the more appropriate basis for this check, since the circadian decline is anchored to each person's own wake time rather than the shared clock; session start time is examined alongside it as a secondary, less-missing-data cross-check. This matches the primary notebook's Diurnal Rhythm Check exactly, re-pointed at this notebook's own `auci_data` (S3 above) and its own pre-existing `wake_time`/`hours_since_wake` (built in the setup chunk for the covariate-adjusted trend models above) and `saliva_timing$t1i_min`.
+*Rationale.* An AUCi decrease could reflect either a task-related suppression or ordinary diurnal decline over the session, since steroid hormones (cortisol, DHEA, testosterone) follow a circadian rhythm that immune markers do not share. Hours since waking, not session clock time, is the more appropriate basis for this check, since the circadian decline is anchored to each person's own wake time rather than the shared clock; T1 saliva collection time is examined alongside it as a secondary, less-missing-data cross-check. This matches the primary notebook's Diurnal Rhythm Check exactly, re-pointed at this notebook's own `auci_data` (S3 above) and its own pre-existing `wake_time`/`hours_since_wake` (built in the setup chunk for the covariate-adjusted trend models above) and `saliva_timing$t1i_min`.
 
 ```{r s4-diurnal-check}
 auci_diurnal_data <- auci_data |>
@@ -2678,6 +3001,7 @@ fmt_time_range <- function(x) {
   )
 }
 session_start_summary <- fmt_time_range(auci_diurnal_data$t1i_min)
+n_range_txt <- function(n) paste0(min(n), "-", max(n))
 hours_wake_valid <- auci_diurnal_data$hours_since_wake[!is.na(auci_diurnal_data$hours_since_wake)]
 hours_wake_summary <- paste0(
   sprintf("N = %d; mean %.1fh; range %.1f", length(hours_wake_valid), mean(hours_wake_valid), min(hours_wake_valid)),
@@ -2693,8 +3017,10 @@ auci_diurnal_tbl |>
   kable(col.names = italicize_stats(c("Biomarker", "Group", "n (wake)", "r (wake)", "p (wake)",
                        "n (clock)", "r (clock)", "p (clock)")),
         escape = FALSE,
-        caption = paste0("Correlation between AUCi and (a) hours since waking, (b) session start time, by biomarker. Hours since waking: ",
-                          hours_wake_summary, ". Session start time: ", session_start_summary, ".")) |>
+        caption = paste0("Correlation between AUCi and (a) hours since waking, (b) T1 saliva collection time (clock time), by biomarker. Correlation n: hours since waking ",
+                          n_range_txt(auci_diurnal_tbl$n_wake), "; T1 collection time ", n_range_txt(auci_diurnal_tbl$n_clock),
+                          ". All participants with a value, before requiring AUCi: hours since waking ",
+                          hours_wake_summary, "; T1 collection time ", session_start_summary, ".")) |>
   apa_table()
 ```
 
@@ -2707,7 +3033,7 @@ sig_diurnal_clock_hormones <- auci_diurnal_tbl |>
   filter(Group == "Hormones (circadian rhythm)", p_clock < 0.05) |> pull(Biomarker)
 ```
 
-**Results.** Hours since waking (`r hours_wake_summary`) was significantly correlated with AUCi for `r fmt_or_none(sig_diurnal_wake_hormones)` — of the three steroid hormones with a known circadian rhythm — with more time since waking associated with more negative AUCi. `r if (length(sig_diurnal_wake_immune) == 0) "No immune marker" else fmt_or_none(sig_diurnal_wake_immune)` showed this relationship. Session start time (`r session_start_summary`) showed the same pattern for `r fmt_or_none(sig_diurnal_clock_hormones)`. This is consistent with normal diurnal decline contributing to the cortisol AUCi decrease reported in S3, rather than a task-specific suppression effect, matching the primary notebook's Diurnal Rhythm Check conclusion.
+**Results.** Hours since waking (`r hours_wake_summary`) was significantly correlated with AUCi for `r fmt_or_none(sig_diurnal_wake_hormones)` — of the three steroid hormones with a known circadian rhythm — with more time since waking associated with more negative AUCi. `r if (length(sig_diurnal_wake_immune) == 0) "No immune marker" else fmt_or_none(sig_diurnal_wake_immune)` showed this relationship. T1 saliva collection time (`r session_start_summary`; correlation n = `r n_range_txt(auci_diurnal_tbl$n_clock)`) showed the same pattern for `r fmt_or_none(sig_diurnal_clock_hormones)`. This is consistent with normal diurnal decline contributing to the cortisol AUCi decrease reported in S3, rather than a task-specific suppression effect, matching the primary notebook's Diurnal Rhythm Check conclusion.
 
 *Note on scope.* This check is correlation-only, matching the primary notebook. A covariate-adjusted version — testing the AUCi one-sample intercepts (S3 above) in a regression model that includes hours-since-waking as a covariate, rather than as a separate bivariate correlation — has not been implemented in either notebook; it would be new computation beyond re-narrating existing analyses, and is noted here rather than silently added.
 
@@ -3036,10 +3362,19 @@ BOLD fMRI time series itself) was used to derive resting and task heart rate for
 including many of the early participants who lack physio-recorded HR entirely (see the HR Subsample
 Comparison and Missing Data Summary sections above -- physio HR monitoring was not part of the
 protocol until several months into data collection). HAPPY currently provides only overall
-rest-vs-task heart rate, not the within-task condition breakdown (Self-Connected/Self-Disconnected/
-Other/Fixation-Cross). This section (1) checks agreement between the two methods in the participants
+rest-vs-task heart rate, not the within-task condition breakdown (Both Watch You/You Watch You/
+Both Watch Peer/Fixation-Cross). This section (1) checks agreement between the two methods in the participants
 who have both, and (2) re-runs the primary task-vs-rest comparison using the full HAPPY sample, which
 is substantially larger than the physio-only sample.
+
+*HAPPY version/settings and run-flagging criteria:* the HAPPY software version, the settings it was
+run with, and the exact rule used to set `qc_flag`/`run_qc_flag` (True/False) in the underlying
+`happy_hr_runs.csv`/`happy_hr_conditions.csv` extraction are not present anywhere in this repo -- the
+script that produced the `happy_hr_*.csv` files in `data/` is not checked in here (searched `code/`,
+`archive/`, and the repo root; see change log). The per-run metrics that presumably feed that rule
+(`pct_beats_kept`, `hr_mean_peaks` vs. `hr_spectral`/`peaks_minus_spectral`) are visible in
+`happy_hr_runs.csv`, but the threshold(s) applied to them are not documented, so `n_flagged_runs`/
+`run_qc_flag` are used here as opaque inputs, same as the rest of this section already did.
 
 ```{r s6-happy-setup, echo=FALSE}
 fmt_p_txt <- function(p) ifelse(p < .001, "< .001", paste0("= ", round(p, 3)))
@@ -3060,6 +3395,50 @@ happy_merged <- hr_final_wide |>
   select(SampleID, resting_avg, Task, task_rs_hr_diff) |>
   inner_join(happy_raw, by = "SampleID") |>
   filter(!is.na(resting_avg), !is.na(Task))
+```
+
+```{r s6-happy-fdr-setup, echo=FALSE}
+# BOLD-derived heart rate FDR family (Task 5): task-vs-rest + the 3 within-
+# task comparisons (Both Watch You vs You Watch You, Both Watch You vs Both Watch Peer, Both Watch You vs Fixation-Cross), mirroring
+# the Aim 1b 4-test family convention (see hr-ttests above). Computed once
+# here, early, so a p (FDR) column can be attached to each table below in
+# its usual place. Correction is run separately within the full-available-
+# HAPPY-sample set and within the flagged-runs-excluded set -- the two
+# samples are not pooled together into one 4-test family.
+happy_cond_raw_fdr <- read.csv(file.path(proj_path, "data", "happy_hr_conditions_wide.csv")) |>
+  mutate(SampleID = sub("^sub-", "", subject), run_qc_flag = as.logical(run_qc_flag)) |>
+  select(SampleID, hr_fixation, hr_other, hr_self_connected, hr_self_disconnected, run_qc_flag) |>
+  filter(SampleID %in% biomarker_ids)
+
+happy_bold_p <- function(raw_hr, raw_cond, label) {
+  tibble(
+    Sample = label,
+    Comparison = c("Task vs. Rest", "Both Watch You vs. You Watch You",
+                    "Both Watch You vs. Both Watch Peer", "Both Watch You vs. Fixation-Cross"),
+    p = c(
+      t.test(raw_hr$hr_task, raw_hr$hr_rest, paired = TRUE)$p.value,
+      t.test(raw_cond$hr_self_connected, raw_cond$hr_self_disconnected, paired = TRUE)$p.value,
+      t.test(raw_cond$hr_self_connected, raw_cond$hr_other,              paired = TRUE)$p.value,
+      t.test(raw_cond$hr_self_connected, raw_cond$hr_fixation,           paired = TRUE)$p.value
+    )
+  )
+}
+
+happy_bold_fdr <- bind_rows(
+  happy_bold_p(
+    happy_raw          |> filter(!is.na(hr_rest), !is.na(hr_task)),
+    happy_cond_raw_fdr |> filter(!is.na(hr_self_connected), !is.na(hr_self_disconnected), !is.na(hr_other), !is.na(hr_fixation)),
+    "Full available HAPPY sample"
+  ),
+  happy_bold_p(
+    happy_raw          |> filter(!is.na(hr_rest), !is.na(hr_task), n_flagged_runs == 0),
+    happy_cond_raw_fdr |> filter(!is.na(hr_self_connected), !is.na(hr_self_disconnected), !is.na(hr_other), !is.na(hr_fixation), !run_qc_flag),
+    "Excluding any HAPPY-flagged runs"
+  )
+) |>
+  group_by(Sample) |>
+  mutate(p_fdr = p.adjust(p, method = "fdr")) |>
+  ungroup()
 ```
 
 ### Reliability: Original vs. HAPPY
@@ -3114,7 +3493,8 @@ happy_full_tbl <- bind_rows(
               t = t.test(hr_task, hr_rest, paired = TRUE)$statistic,
               df = t.test(hr_task, hr_rest, paired = TRUE)$parameter,
               p = t.test(hr_task, hr_rest, paired = TRUE)$p.value,
-              `Mean diff (bpm)` = t.test(hr_task, hr_rest, paired = TRUE)$estimate),
+              `Mean diff (bpm)` = t.test(hr_task, hr_rest, paired = TRUE)$estimate,
+              `SD diff (bpm)` = sd(hr_task - hr_rest)),
   happy_raw |> filter(!is.na(hr_rest), !is.na(hr_task), n_flagged_runs == 0) |>
     summarise(Sample = "Excluding any HAPPY-flagged runs", n = n(),
               `Resting HR M (SD)` = paste0(round(mean(hr_rest), 2), " (", round(sd(hr_rest), 2), ")"),
@@ -3122,9 +3502,12 @@ happy_full_tbl <- bind_rows(
               t = t.test(hr_task, hr_rest, paired = TRUE)$statistic,
               df = t.test(hr_task, hr_rest, paired = TRUE)$parameter,
               p = t.test(hr_task, hr_rest, paired = TRUE)$p.value,
-              `Mean diff (bpm)` = t.test(hr_task, hr_rest, paired = TRUE)$estimate)
+              `Mean diff (bpm)` = t.test(hr_task, hr_rest, paired = TRUE)$estimate,
+              `SD diff (bpm)` = sd(hr_task - hr_rest))
 ) |>
-  mutate(across(c(t, `Mean diff (bpm)`), \(x) round(x, 3)),
+  left_join(happy_bold_fdr |> filter(Comparison == "Task vs. Rest") |> select(Sample, p_fdr), by = "Sample") |>
+  mutate(d_z = t / sqrt(n)) |>
+  mutate(across(c(t, `Mean diff (bpm)`, `SD diff (bpm)`, d_z, p_fdr), \(x) round(x, 3)),
          p_numeric = p,
          p = if_else(p < 0.001,
                       if (knitr::is_html_output()) "&lt; .001" else "< .001",
@@ -3132,14 +3515,17 @@ happy_full_tbl <- bind_rows(
 
 happy_full_tbl |>
   select(-p_numeric) |>
-  kable(escape = FALSE, col.names = italicize_stats(c("Sample", "n", "Resting HR M (SD)", "Task HR M (SD)", "t", "df", "p", "Mean diff (bpm)")),
-        caption = "Task vs. rest heart rate using the full HAPPY sample (of the biomarker sample)") |>
+  mutate(p_fdr = cell_spec(p_fdr, bold = p_fdr < 0.05,
+    color = if_else(p_fdr < 0.05, "#2166ac", "black"))) |>
+  kable(escape = FALSE, col.names = italicize_stats(c("Sample", "n", "Resting HR M (SD)", "Task HR M (SD)", "t", "df", "p (raw)", "Mean diff (bpm)", "SD diff (bpm)", "p (FDR)", "d_z")),
+        caption = "Task vs. rest heart rate using the full HAPPY sample (of the biomarker sample); p (FDR) corrected within the 4-test BOLD-derived HR family (task-vs-rest + the 3 within-task comparisons below), separately within each Sample row") |>
   apa_table(full_width = FALSE)
 ```
 
 ```{r s6-happy-fullsample-results, echo=FALSE, include=FALSE}
 happy_full_n <- happy_full_tbl$n[happy_full_tbl$Sample == "Full available HAPPY sample"]
 happy_full_tt_p <- happy_full_tbl$p_numeric[happy_full_tbl$Sample == "Full available HAPPY sample"]
+happy_full_tt_pfdr <- happy_bold_fdr$p_fdr[happy_bold_fdr$Sample == "Full available HAPPY sample" & happy_bold_fdr$Comparison == "Task vs. Rest"]
 happy_outlier_tt <- t.test(
   (happy_raw |> filter(!is.na(hr_rest), !is.na(hr_task), SampleID != "TAG045"))$hr_task,
   (happy_raw |> filter(!is.na(hr_rest), !is.na(hr_task), SampleID != "TAG045"))$hr_rest,
@@ -3147,11 +3533,11 @@ happy_outlier_tt <- t.test(
 )
 ```
 
-**Results.** Using the full available HAPPY sample (N = `r happy_full_n`) -- substantially larger than the `r sum(!is.na(hr_final_wide$resting_avg) & !is.na(hr_final_wide$Task))`-person physio-only sample, since HAPPY recovers heart rate for most of the early participants who predate physio HR monitoring -- task HR is significantly higher than resting HR (*p* `r fmt_p_txt(happy_full_tt_p)`; see table). The conclusion is unchanged whether HAPPY-flagged runs are excluded or not. One participant, TAG045, is a clear outlier on the task-minus-rest difference (+18.6 bpm, versus the next most extreme value of +9.3) and has only a single resting run plus one flagged run; excluding TAG045 specifically (rather than all flagged-run participants) gives *t*(`r unname(happy_outlier_tt$parameter)`) = `r round(unname(happy_outlier_tt$statistic), 2)`, *p* `r fmt_p_txt(happy_outlier_tt$p.value)`, mean diff = `r round(unname(happy_outlier_tt$estimate), 2)` bpm -- the same conclusion either way.
+**Results.** Using the full available HAPPY sample (N = `r happy_full_n`) -- substantially larger than the `r sum(!is.na(hr_final_wide$resting_avg) & !is.na(hr_final_wide$Task))`-person physio-only sample, since HAPPY recovers heart rate for most of the early participants who predate physio HR monitoring -- task HR is significantly higher than resting HR (*p*~FDR~ `r fmt_p_txt(happy_full_tt_pfdr)`, FDR-corrected within the 4-test BOLD-derived HR family; see table). The conclusion is unchanged whether HAPPY-flagged runs are excluded or not. One participant, TAG045, is a clear outlier on the task-minus-rest difference (+18.6 bpm, versus the next most extreme value of +9.3) and has only a single resting run plus one flagged run; excluding TAG045 specifically (rather than all flagged-run participants) gives *t*(`r unname(happy_outlier_tt$parameter)`) = `r round(unname(happy_outlier_tt$statistic), 2)`, *p* `r fmt_p_txt(happy_outlier_tt$p.value)`, mean diff = `r round(unname(happy_outlier_tt$estimate), 2)` bpm -- the same conclusion either way (this one-off outlier check is not part of the 4-test FDR family, so it's reported as a raw p, same as before).
 
-### Condition-Specific Heart Rate (Self-Connected, Self-Disconnected, Other, Fixation-Cross)
+### Condition-Specific Heart Rate (Both Watch You, You Watch You, `Both Watch Peer`, Fixation-Cross)
 
-HAPPY now also provides condition-specific heart rate within the task run (from the BIDS events files built for this purpose; see `code/make_sos_events.py`), so the within-task comparisons from Aim 1b (Self-Connected vs. Self-Disconnected/Other/Fixation-Cross) can be checked and replicated the same way as the task-vs-rest comparison above.
+HAPPY now also provides condition-specific heart rate within the task run (from the BIDS events files built for this purpose; see `code/make_sos_events.py`), so the within-task comparisons from Aim 1b (Both Watch You vs. You Watch You/Both Watch Peer/Fixation-Cross) can be checked and replicated the same way as the task-vs-rest comparison above.
 
 ```{r s6-happy-condition-setup, echo=FALSE}
 happy_cond_raw <- read.csv(file.path(proj_path, "data", "happy_hr_conditions_wide.csv")) |>
@@ -3160,7 +3546,7 @@ happy_cond_raw <- read.csv(file.path(proj_path, "data", "happy_hr_conditions_wid
   filter(SampleID %in% biomarker_ids)
 
 happy_cond_merged <- hr_final_wide |>
-  select(SampleID, `Self-Connected`, `Self-Disconnected`, Other, `Fixation-Cross`,
+  select(SampleID, `Both Watch You`, `You Watch You`, `Both Watch Peer`, `Fixation-Cross`,
          conn_dis_hr_diff, conn_other_hr_diff, conn_rest_hr_diff) |>
   inner_join(happy_cond_raw, by = "SampleID") |>
   mutate(
@@ -3168,20 +3554,20 @@ happy_cond_merged <- hr_final_wide |>
     happy_conn_other_diff = hr_self_connected - hr_other,
     happy_conn_rest_diff  = hr_self_connected - hr_fixation
   ) |>
-  filter(!is.na(`Self-Connected`), !is.na(`Self-Disconnected`), !is.na(Other), !is.na(`Fixation-Cross`))
+  filter(!is.na(`Both Watch You`), !is.na(`You Watch You`), !is.na(`Both Watch Peer`), !is.na(`Fixation-Cross`))
 ```
 
 #### Reliability: Original vs. HAPPY, by Condition
 
 ```{r s6-happy-condition-reliability, echo=FALSE}
 happy_cond_reliability_tbl <- bind_rows(
-  run_icc_row(happy_cond_merged$`Self-Connected`,    happy_cond_merged$hr_self_connected,    "Self-Connected"),
-  run_icc_row(happy_cond_merged$`Self-Disconnected`, happy_cond_merged$hr_self_disconnected, "Self-Disconnected"),
-  run_icc_row(happy_cond_merged$Other,               happy_cond_merged$hr_other,              "Other"),
+  run_icc_row(happy_cond_merged$`Both Watch You`,    happy_cond_merged$hr_self_connected,    "Both Watch You"),
+  run_icc_row(happy_cond_merged$`You Watch You`, happy_cond_merged$hr_self_disconnected, "You Watch You"),
+  run_icc_row(happy_cond_merged$`Both Watch Peer`,               happy_cond_merged$hr_other,              "Both Watch Peer"),
   run_icc_row(happy_cond_merged$`Fixation-Cross`,    happy_cond_merged$hr_fixation,           "Fixation-Cross"),
-  run_icc_row(happy_cond_merged$conn_dis_hr_diff,    happy_cond_merged$happy_conn_dis_diff,   "Self-Connected − Self-Disconnected"),
-  run_icc_row(happy_cond_merged$conn_other_hr_diff,  happy_cond_merged$happy_conn_other_diff, "Self-Connected − Other"),
-  run_icc_row(happy_cond_merged$conn_rest_hr_diff,   happy_cond_merged$happy_conn_rest_diff,  "Self-Connected − Fixation-Cross")
+  run_icc_row(happy_cond_merged$conn_dis_hr_diff,    happy_cond_merged$happy_conn_dis_diff,   "Both Watch You − You Watch You"),
+  run_icc_row(happy_cond_merged$conn_other_hr_diff,  happy_cond_merged$happy_conn_other_diff, "Both Watch You − Both Watch Peer"),
+  run_icc_row(happy_cond_merged$conn_rest_hr_diff,   happy_cond_merged$happy_conn_rest_diff,  "Both Watch You − Fixation-Cross")
 )
 
 happy_cond_reliability_tbl |>
@@ -3205,15 +3591,18 @@ run_cond_paired <- function(df, label) {
   tt_oth <- t.test(df$hr_self_connected, df$hr_other,              paired = TRUE)
   tt_fix <- t.test(df$hr_self_connected, df$hr_fixation,           paired = TRUE)
   bind_rows(
-    tibble(Sample = label, Comparison = "Self-Connected vs. Self-Disconnected", n = nrow(df),
+    tibble(Sample = label, Comparison = "Both Watch You vs. You Watch You", n = nrow(df),
            t = unname(tt_sd$statistic), df_ = unname(tt_sd$parameter), p = tt_sd$p.value,
-           `Mean diff (bpm)` = unname(tt_sd$estimate)),
-    tibble(Sample = label, Comparison = "Self-Connected vs. Other", n = nrow(df),
+           `Mean diff (bpm)` = unname(tt_sd$estimate),
+           `SD diff (bpm)` = sd(df$hr_self_connected - df$hr_self_disconnected)),
+    tibble(Sample = label, Comparison = "Both Watch You vs. Both Watch Peer", n = nrow(df),
            t = unname(tt_oth$statistic), df_ = unname(tt_oth$parameter), p = tt_oth$p.value,
-           `Mean diff (bpm)` = unname(tt_oth$estimate)),
-    tibble(Sample = label, Comparison = "Self-Connected vs. Fixation-Cross", n = nrow(df),
+           `Mean diff (bpm)` = unname(tt_oth$estimate),
+           `SD diff (bpm)` = sd(df$hr_self_connected - df$hr_other)),
+    tibble(Sample = label, Comparison = "Both Watch You vs. Fixation-Cross", n = nrow(df),
            t = unname(tt_fix$statistic), df_ = unname(tt_fix$parameter), p = tt_fix$p.value,
-           `Mean diff (bpm)` = unname(tt_fix$estimate))
+           `Mean diff (bpm)` = unname(tt_fix$estimate),
+           `SD diff (bpm)` = sd(df$hr_self_connected - df$hr_fixation))
   )
 }
 
@@ -3224,8 +3613,10 @@ happy_cond_full_tbl <- bind_rows(
                    "Excluding any HAPPY-flagged runs")
 ) |>
   rename(df = df_) |>
+  left_join(happy_bold_fdr |> select(Sample, Comparison, p_fdr), by = c("Sample", "Comparison")) |>
+  mutate(d_z = t / sqrt(n)) |>
   mutate(
-    across(c(t, `Mean diff (bpm)`), \(x) round(x, 3)),
+    across(c(t, `Mean diff (bpm)`, `SD diff (bpm)`, d_z, p_fdr), \(x) round(x, 3)),
     p_numeric = p,
     p = if_else(p < 0.001,
                  if (knitr::is_html_output()) "&lt; .001" else "< .001",
@@ -3234,18 +3625,20 @@ happy_cond_full_tbl <- bind_rows(
 
 happy_cond_full_tbl |>
   select(-p_numeric) |>
-  kable(escape = FALSE, col.names = italicize_stats(c("Sample", "Comparison", "n", "t", "df", "p", "Mean diff (bpm)")),
-        caption = "Within-task heart rate comparisons using the full HAPPY sample") |>
+  mutate(p_fdr = cell_spec(p_fdr, bold = p_fdr < 0.05,
+    color = if_else(p_fdr < 0.05, "#2166ac", "black"))) |>
+  kable(escape = FALSE, col.names = italicize_stats(c("Sample", "Comparison", "n", "t", "df", "p (raw)", "Mean diff (bpm)", "SD diff (bpm)", "p (FDR)", "d_z")),
+        caption = "Within-task heart rate comparisons using the full HAPPY sample; p (FDR) corrected within the 4-test BOLD-derived HR family (this comparison + task-vs-rest above), separately within each Sample row") |>
   apa_table(full_width = FALSE)
 ```
 
 ```{r s6-happy-condition-fullsample-results, echo=FALSE, include=FALSE}
 happy_cond_full_n <- happy_cond_full_tbl$n[happy_cond_full_tbl$Sample == "Full available HAPPY sample"][1]
 happy_cond_full_sig <- happy_cond_full_tbl |>
-  filter(Sample == "Full available HAPPY sample", p_numeric < 0.05) |>
+  filter(Sample == "Full available HAPPY sample", p_fdr < 0.05) |>
   pull(Comparison)
 happy_cond_full_nonsig <- happy_cond_full_tbl |>
-  filter(Sample == "Full available HAPPY sample", p_numeric >= 0.05) |>
+  filter(Sample == "Full available HAPPY sample", p_fdr >= 0.05) |>
   pull(Comparison)
 happy_cond_fmt_sig    <- if (length(happy_cond_full_sig) == 0) "none" else paste(happy_cond_full_sig, collapse = ", ")
 happy_cond_replication_text <- if (length(happy_cond_full_nonsig) == 0) {
@@ -3259,9 +3652,7 @@ happy_cond_replication_text <- if (length(happy_cond_full_nonsig) == 0) {
 }
 ```
 
-**Results.** Using the full available HAPPY condition-specific sample (N = `r happy_cond_full_n`) -- again substantially larger than the physio-only within-task sample -- the following within-task comparison(s) remained significant at *p* < .05: `r happy_cond_fmt_sig`. The conclusion is unchanged whether HAPPY-flagged runs are excluded or not (see table). `r happy_cond_replication_text`
-
-*Note on scope.* These HAPPY-derived condition means are not yet FDR-corrected as a family the way the primary physio-based comparisons are (Aim 1b); treat the full-sample numbers above as a replication check on the primary conclusion, not a stand-alone corrected test.
+**Results.** Using the full available HAPPY condition-specific sample (N = `r happy_cond_full_n`) -- again substantially larger than the physio-only within-task sample -- the following within-task comparison(s) remained significant at *p*~FDR~ < .05 (FDR-corrected within the 4-test BOLD-derived HR family, together with the task-vs-rest comparison above): `r happy_cond_fmt_sig`. The conclusion is unchanged whether HAPPY-flagged runs are excluded or not (see table). `r happy_cond_replication_text`
 
 ## Cross-Check
 
@@ -3297,7 +3688,7 @@ clean_p <- tibble(
 
 fmt_p_check <- function(p, threshold = 0.05) {
   if (is.na(p)) return("—")
-  lbl <- if (p < threshold) paste0(round(p, 3), "*") else as.character(round(p, 3))
+  lbl <- if (p < threshold) paste0(fmt_p_value(p), "*") else fmt_p_value(p)
   cell_spec(lbl, bold = p < threshold,
             color = if (p < threshold) "#2166ac" else "black")
 }
@@ -3345,12 +3736,12 @@ bio_cross |>
 hr_ill_tbl <- list(
   "Task vs. Resting"                     = t.test(hr_all_wide_well$Task, hr_all_wide_well$resting_avg,
                                                    alternative = "two.sided", paired = TRUE),
-  "Self-Connected vs. Fixation-Cross"    = t.test(pull_hr_well("Self-Connected"), pull_hr_well("Fixation-Cross"),
+  "Both Watch You vs. Fixation-Cross"    = t.test(pull_hr_well("Both Watch You"), pull_hr_well("Fixation-Cross"),
                                                    alternative = "two.sided", paired = TRUE),
-  "Self-Connected vs. Self-Disconnected" = t.test(pull_hr_well("Self-Connected"),
-                                                   pull_hr_well("Self-Disconnected"),
+  "Both Watch You vs. You Watch You" = t.test(pull_hr_well("Both Watch You"),
+                                                   pull_hr_well("You Watch You"),
                                                    alternative = "two.sided", paired = TRUE),
-  "Self-Connected vs. Other"             = t.test(pull_hr_well("Self-Connected"), pull_hr_well("Other"),
+  "Both Watch You vs. Both Watch Peer"             = t.test(pull_hr_well("Both Watch You"), pull_hr_well("Both Watch Peer"),
                                                    alternative = "two.sided", paired = TRUE)
 ) |>
   map(broom::tidy) |>
@@ -3424,10 +3815,10 @@ mixed_detail <- bio_cross_raw |>
 
 ### Quadratic Time Trend Cross-Check
 
-The reactivity cross-check above tracks the peak-vs-T1 difference score; this companion table tracks robustness of the other primary finding from Aim 1c — the **quadratic time trend** itself. A biomarker is flagged as significant (✓) when the FDR-corrected p-value for the quadratic time term is < .05: in the primary analysis (likelihood ratio test, quadratic vs. linear, FDR-corrected within immune markers and hormones separately), after excluding ill, bleeding-gum, and smoking participants (immune markers only — hormones were not re-run in that sensitivity check, so this cell is blank for hormones and the consistency denominator is 2 instead of 3), and in the covariate-adjusted trend model (adjusting for flow rate, age, BMI, and hours since waking; FDR-corrected within immune markers and hormones separately).
+The reactivity cross-check above tracks the peak-vs-T1 difference score; this companion table tracks robustness of the other primary finding from Aim 1c — the **quadratic time trend** itself. A biomarker is flagged as significant (✓) when the FDR-corrected p-value for the quadratic time term is < .05: in the primary analysis (quadratic fixed effect, FDR-corrected within immune markers and hormones separately), after excluding ill, bleeding-gum, and smoking participants (immune markers only — hormones were not re-run in that sensitivity check, so this cell is blank for hormones and the consistency denominator is 2 instead of 3), and in the covariate-adjusted trend model (adjusting for flow rate, age, BMI, and hours since waking; FDR-corrected within immune markers and hormones separately).
 
 ```{r quad-crosscheck, echo=FALSE}
-# Biomarker-name lookup: lrt_tbl / clean_fixed_effects spell out "TNF-alpha";
+# Biomarker-name lookup: mlm_list / clean_fixed_effects spell out "TNF-alpha";
 # covtrend_all_fixed uses "TNF-α". Route both through the same `key` used in
 # biomarker_ref above.
 quad_key_map <- tibble(
@@ -3436,7 +3827,19 @@ quad_key_map <- tibble(
   biomarker_cov = c("CRP", "IL-10", "IL-6", "TNF-α",     "DHEA", "Testosterone", "Cortisol")
 )
 
-quad_primary_p <- lrt_tbl |>
+# Quadratic fixed effect, the same test as the other two columns, FDR-corrected
+# within immune markers and hormones as in the primary notebook.
+quad_primary_p <- imap_dfr(mlm_list, function(res, name) {
+  broom.mixed::tidy(res$quadratic, effects = "fixed") |>
+    mutate(biomarker = name)
+}) |>
+  filter(term == "poly(Time, 2)2") |>
+  mutate(group = if_else(
+    biomarker %in% c("CRP", "IL-10", "IL-6", "TNF-alpha"), "Immune", "Hormones"
+  )) |>
+  group_by(group) |>
+  mutate(p_fdr = p.adjust(p.value, method = "fdr")) |>
+  ungroup() |>
   select(biomarker_lrt = biomarker, p_primary_quad = p_fdr) |>
   left_join(quad_key_map, by = "biomarker_lrt") |>
   select(key, p_primary_quad)
@@ -3500,3 +3903,18 @@ mixed_quad_biomarkers   <- quad_cross_raw |> filter(n_sig > 0 & n_sig < n_tests)
 ```
 
 **Results.** Of the 7 biomarkers, `r n_all_sig_quad` showed a consistently significant quadratic time trend across all available sensitivity analyses`r if (n_all_sig_quad > 0) paste0(": ", all_sig_quad_biomarkers)`. `r n_all_ns_quad` biomarker`r if (n_all_ns_quad != 1) "s"` were consistently non-significant. `r if (n_mixed_quad > 0) paste0(n_mixed_quad, " biomarker(s) showed mixed results: ", mixed_quad_biomarkers, ".")` Note that immune markers are checked against 3 analyses and hormones against 2 (the illness/bleeding-gum/smoking exclusion was not re-run for hormones), so "All sig"/"All ns" denominators differ by biomarker group.
+
+---
+
+# Sample-Scope Check Addendum
+
+Complete `check_sample_scope()` registry (see Sample-Scope Check above for the mechanism). Every data frame below was checked at the point it was created; the render would have failed with a "Sample-scope violation" error at that point if any contained an ID outside the N=72 analytic sample.
+
+```{r sample-scope-table-final}
+tibble(
+  `Data frame` = names(sample_scope_registry),
+  n = unlist(sample_scope_registry, use.names = FALSE)
+) |>
+  kable(caption = "Sample-scope registry (final, complete): every checked data frame and its n") |>
+  apa_table(full_width = FALSE)
+```

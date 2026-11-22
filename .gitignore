@@ -9,3 +9,6 @@ data/
 *.png
 *.csv
 *.pdf
+CHANGELOG-nov2026.md
+*.knit.md
+*.rmarkdown
